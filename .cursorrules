@@ -1,0 +1,418 @@
+# OpenAI Agents Laravel Package - Cursor Rules
+
+## Package Overview
+This is a Laravel package for OpenAI Agents integration with progressive enhancement architecture (4 levels). The package provides AI agent capabilities with tools, handoffs, MCP support, and autonomous features.
+
+## Architecture & Design Patterns
+
+### Core Components
+- **Agent.php**: Main agent class with chat, streaming, and autonomous capabilities
+- **Runner.php**: Manages agent execution, tools, guardrails, and handoffs
+- **AgentServiceProvider.php**: Laravel service provider for dependency injection
+- **AgentManager.php**: Manages multiple agent instances and configurations
+
+### Progressive Enhancement Levels
+1. **Level 1**: Simple conversational agents
+2. **Level 2**: Agents with tools and OpenAI official tools
+3. **Level 3**: Multi-agent handoffs and workflows
+4. **Level 4**: Autonomous agents with decision-making capabilities
+
+### Directory Structure
+```
+src/
+├── Agent.php                    # Main agent class (1647 lines)
+├── Runner.php                   # Agent execution manager (1042 lines)
+├── AgentManager.php             # Agent instance management
+├── AgentServiceProvider.php     # Laravel service provider
+├── VoicePipeline.php            # Audio processing pipeline
+├── Console/Commands/            # Artisan commands for testing
+├── Tools/                       # Tool definitions and managers
+├── Handoff/                     # Multi-agent handoff system
+├── MCP/                         # Model Context Protocol
+├── State/                       # Conversation state management
+├── Tracing/                     # Observability and debugging
+├── Security/                    # Security controls
+├── Registry/                    # Agent registry
+├── Lifecycle/                   # Agent lifecycle management
+├── Metrics/                     # Performance metrics
+├── Guardrails/                  # Input/output validation
+├── Providers/                   # Model providers
+├── Interfaces/                  # Interface definitions
+├── Helpers/                     # Utility functions
+├── Http/                        # HTTP controllers and routes
+└── Facades/                     # Laravel facades
+```
+
+## Coding Conventions
+
+### PHP Standards
+- Use `declare(strict_types=1);` at the top of files
+- Follow PSR-4 autoloading: `Sapiensly\OpenaiAgents\`
+- Use type hints for all parameters and return types
+- Document all public methods with PHPDoc blocks
+- Use nullable types (`?string`, `?array`) for optional parameters
+
+### Class Structure
+```php
+<?php
+declare(strict_types=1);
+
+namespace Sapiensly\OpenaiAgents\Category;
+
+use Exception;
+use Illuminate\Support\Facades\Log;
+
+/**
+ * Class Description
+ * 
+ * Detailed description of the class purpose and functionality.
+ * Include usage examples and important notes.
+ */
+class ClassName
+{
+    /**
+     * Property description
+     *
+     * @var Type
+     */
+    protected Type $property;
+
+    /**
+     * Constructor description
+     *
+     * @param Type $param Parameter description
+     */
+    public function __construct(Type $param)
+    {
+        $this->property = $param;
+    }
+
+    /**
+     * Method description
+     *
+     * @param array $options Configuration options
+     * @return self Returns instance for method chaining
+     */
+    public function method(array $options = []): self
+    {
+        // Implementation
+        return $this;
+    }
+}
+```
+
+### Method Chaining
+- Return `self` for fluent interfaces
+- Use method chaining for configuration methods
+- Example: `$agent->setOption('key', 'value')->enableFeature()`
+
+### Error Handling
+- Use custom exception classes in `Handoff/` and `Guardrails/`
+- Log errors with context using `Log::error()`
+- Provide meaningful error messages
+- Use try-catch blocks for external API calls
+
+### Configuration
+- All configuration in `config/agents.php`
+- Use environment variables with defaults
+- Support multiple configuration profiles
+- Validate configuration in service provider
+
+## Key Design Patterns
+
+### Service Provider Pattern
+- Register services in `AgentServiceProvider::register()`
+- Boot services in `AgentServiceProvider::boot()`
+- Use singleton pattern for shared instances
+- Publish configuration and assets
+
+### Facade Pattern
+- Provide `Agent` facade for simple access
+- Register in `composer.json` extra.laravel.aliases
+- Maintain backward compatibility
+
+### Builder Pattern
+- Use builder classes for complex configurations
+- Example: `ToolDefinitionBuilder` for tool creation
+- Fluent interface for configuration
+
+### Observer Pattern
+- Use events for lifecycle management
+- Implement tracing and metrics collection
+- Support custom event listeners
+
+### Strategy Pattern
+- Different handoff strategies in `Handoff/`
+- Multiple transport protocols in `MCP/`
+- Configurable guardrails and validators
+
+## Tool System Architecture
+
+### Tool Registration
+```php
+// Simple tool
+$runner->registerTool('name', function($args) {
+    return 'result';
+});
+
+// Typed tool with schema
+$runner->registerTypedTool(new ToolDefinition([
+    'name' => 'tool_name',
+    'description' => 'Tool description',
+    'parameters' => [...],
+    'callback' => function($args) { ... }
+]));
+```
+
+### Tool Categories
+- **Function Tools**: Simple callbacks with arguments
+- **OpenAI Tools**: Code interpreter, retrieval, web search
+- **MCP Tools**: Model Context Protocol tools
+- **RAG Tools**: Retrieval-Augmented Generation
+- **File Tools**: File upload and processing
+
+### Tool Validation
+- Use `ToolArgumentValidator` for parameter validation
+- Implement schema-based validation
+- Support type conversion and sanitization
+
+## Handoff System
+
+### Handoff Types
+- **Basic Handoff**: Simple agent switching
+- **Advanced Handoff**: Context preservation, security controls
+- **Parallel Handoff**: Concurrent agent processing
+- **Reversible Handoff**: State preservation and rollback
+
+### Handoff Components
+- `HandoffOrchestrator`: Main coordination
+- `ContextAnalyzer`: Context analysis and transfer
+- `SecurityManager`: Permission and capability checks
+- `ConversationStateManager`: State persistence
+
+## MCP (Model Context Protocol)
+
+### Transport Protocols
+- **HTTP**: RESTful API communication
+- **STDIO**: Local process communication
+- **SSE**: Server-Sent Events for streaming
+
+### MCP Components
+- `MCPManager`: Main MCP coordination
+- `MCPClient`: HTTP client implementation
+- `MCPServer`: Server implementation
+- `MCPTool`: Tool integration
+
+## Testing & Commands
+
+### Artisan Commands
+- All commands in `src/Console/Commands/`
+- Use descriptive command names
+- Include comprehensive documentation headers
+- Support testing different levels and features
+
+### Command Structure
+```php
+/**
+ * Command Name
+ * 
+ * Purpose: Brief description of what the command does
+ * Features: List of key features and capabilities
+ * Usage: How to use the command
+ * Test Scenarios: What scenarios it tests
+ */
+class CommandName extends Command
+{
+    protected $signature = 'agents:command-name {param?}';
+    protected $description = 'Command description';
+
+    public function handle(): int
+    {
+        // Implementation
+        return self::SUCCESS;
+    }
+}
+```
+
+## Configuration Management
+
+### Environment Variables
+- Use `env()` helper with defaults
+- Prefix with package name: `AGENTS_*`
+- Document all variables in README
+
+### Configuration Structure
+```php
+return [
+    'api_key' => env('OPENAI_API_KEY'),
+    'default' => [
+        'model' => env('OPENAI_MODEL', 'gpt-4o'),
+        'temperature' => env('OPENAI_TEMPERATURE', 0.7),
+    ],
+    'handoff' => [
+        'advanced' => env('AGENTS_ADVANCED_HANDOFF', true),
+        // ... more config
+    ],
+];
+```
+
+## Documentation Standards
+
+### README Structure
+- Clear installation instructions
+- Progressive enhancement examples
+- Configuration guide
+- API reference
+- Testing instructions
+
+### Code Documentation
+- Document all public methods
+- Include usage examples
+- Explain complex algorithms
+- Document configuration options
+
+### Command Documentation
+- Purpose and features
+- Usage examples
+- Test scenarios
+- Configuration requirements
+
+## Performance Considerations
+
+### Caching
+- Use `ToolCacheManager` for tool results
+- Use `ResponseCacheManager` for complete responses
+- Implement intelligent cache invalidation
+
+### Memory Management
+- Implement agent lifecycle management
+- Use pooling for resource optimization
+- Monitor memory usage in long-running processes
+
+### Async Processing
+- Use PHP Fibers for async operations
+- Implement queue-based processing
+- Support streaming responses
+
+## Security Guidelines
+
+### Input Validation
+- Use guardrails for input validation
+- Sanitize user inputs
+- Validate tool parameters
+
+### Permission Management
+- Implement capability-based access control
+- Use role-based permissions
+- Validate handoff permissions
+
+### API Security
+- Validate API keys and tokens
+- Implement rate limiting
+- Log security events
+
+## Development Workflow
+
+### Adding New Features
+1. Create feature branch
+2. Add tests and commands
+3. Update documentation
+4. Follow coding standards
+5. Test all levels
+
+### Testing Strategy
+- Test each progressive level
+- Test all transport protocols
+- Test error scenarios
+- Test performance under load
+
+### Documentation Updates
+- Update README for new features
+- Add command documentation
+- Update configuration examples
+- Maintain changelog
+
+## Common Patterns
+
+### Agent Creation
+```php
+// Simple agent
+$agent = Agent::create(['model' => 'gpt-4o']);
+
+// With tools
+$agent = Agent::create([
+    'model' => 'gpt-4o',
+    'tools' => ['calculator', 'rag'],
+]);
+
+// Autonomous agent
+$agent = Agent::create([
+    'mode' => 'autonomous',
+    'autonomy_level' => 'high',
+    'capabilities' => ['monitor', 'decide', 'act'],
+]);
+```
+
+### Runner Usage
+```php
+$runner = Agent::runner();
+$runner->registerTool('tool_name', $callback);
+$response = $runner->run('User message');
+```
+
+### Tool Definition
+```php
+$tool = new ToolDefinition([
+    'name' => 'tool_name',
+    'description' => 'Tool description',
+    'parameters' => [
+        'param_name' => [
+            'type' => 'string',
+            'description' => 'Parameter description',
+            'required' => true,
+        ],
+    ],
+    'callback' => function($args) {
+        // Tool implementation
+        return 'result';
+    },
+]);
+```
+
+## Error Handling Patterns
+
+### Custom Exceptions
+```php
+class HandoffException extends Exception
+{
+    public function __construct(string $message, int $code = 0, ?Throwable $previous = null)
+    {
+        parent::__construct($message, $code, $previous);
+    }
+}
+```
+
+### Logging
+```php
+Log::error('Error message', [
+    'context' => 'additional info',
+    'agent_id' => $this->id,
+    'user_id' => $userId,
+]);
+```
+
+## Integration Guidelines
+
+### Laravel Integration
+- Use Laravel's service container
+- Follow Laravel conventions
+- Use Laravel's logging and caching
+- Integrate with Laravel's queue system
+
+### Third-party Libraries
+- Use OpenAI PHP client
+- Support multiple model providers
+- Integrate with external APIs
+- Use standard PHP libraries
+
+This `.cursorrules` file provides comprehensive guidance for understanding and working with the OpenAI Agents Laravel package, ensuring consistent development practices and maintaining code quality. 
