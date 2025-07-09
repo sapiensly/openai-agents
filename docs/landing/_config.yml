@@ -1,0 +1,46 @@
+# GitHub Pages Configuration
+
+# Theme settings
+theme: jekyll-theme-cayman
+title: OpenAI Agents for Laravel
+description: A powerful, flexible Laravel package that integrates OpenAI's AI capabilities into your applications through a progressive enhancement architecture.
+show_downloads: true
+
+# SEO settings
+author:
+  name: Sapiensly
+  url: https://github.com/sapiensly
+
+# Social media
+social:
+  name: Sapiensly
+  links:
+    - https://github.com/sapiensly
+    - https://packagist.org/packages/sapiensly/openai-agents
+
+# GitHub metadata
+github:
+  is_project_page: true
+  repository_url: https://github.com/sapiensly/openai-agents
+  owner_url: https://github.com/sapiensly
+  owner_name: Sapiensly
+
+# Plugins
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap
+  - jekyll-github-metadata
+
+# Markdown settings
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+
+# Exclude files from processing
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - node_modules
+  - vendor
+  - .gitignore

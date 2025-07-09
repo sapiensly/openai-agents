@@ -1,0 +1,203 @@
+---
+---
+
+@import "{{ site.theme }}";
+
+// Custom styles for OpenAI Agents for Laravel
+
+// Color variables
+$primary-color: #0366d6;
+$secondary-color: #28a745;
+$tertiary-color: #f9c513;
+$quaternary-color: #d73a49;
+$background-color: #f6f8fa;
+$text-color: #24292e;
+$link-color: #0366d6;
+$code-background: #f0f7ff;
+
+// Global styles
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  color: $text-color;
+  line-height: 1.6;
+}
+
+.page-header {
+  background-color: $primary-color;
+  background-image: linear-gradient(120deg, $primary-color, $secondary-color);
+}
+
+.main-content {
+  h1, h2, h3, h4, h5, h6 {
+    color: $primary-color;
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+  }
+
+  h1 {
+    border-bottom: 1px solid #eaecef;
+    padding-bottom: 0.3em;
+  }
+
+  h2 {
+    border-bottom: 1px solid #eaecef;
+    padding-bottom: 0.3em;
+  }
+
+  a {
+    color: $link-color;
+    text-decoration: none;
+
+    &:hover {
+      text-decoration: underline;
+    }
+  }
+
+  code {
+    background-color: $code-background;
+    border-radius: 3px;
+    padding: 0.2em 0.4em;
+  }
+
+  pre {
+    background-color: $code-background;
+    border-radius: 3px;
+    padding: 16px;
+    overflow: auto;
+
+    code {
+      background-color: transparent;
+      padding: 0;
+    }
+  }
+}
+
+// Feature cards
+.feature-cards {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  margin-bottom: 2rem;
+
+  .feature-card {
+    width: 48%;
+    margin-bottom: 1rem;
+    padding: 1rem;
+    border-radius: 6px;
+    background-color: $background-color;
+    border-left: 4px solid $primary-color;
+
+    &:nth-child(2n) {
+      border-left-color: $secondary-color;
+    }
+
+    &:nth-child(3n) {
+      border-left-color: $tertiary-color;
+    }
+
+    &:nth-child(4n) {
+      border-left-color: $quaternary-color;
+    }
+
+    h3 {
+      margin-top: 0;
+    }
+  }
+}
+
+// Level cards
+.level-cards {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  margin-bottom: 2rem;
+
+  .level-card {
+    width: 23%;
+    margin-bottom: 1rem;
+    padding: 1rem;
+    border-radius: 6px;
+    background-color: $code-background;
+
+    &:nth-child(1) {
+      border-left: 4px solid $primary-color;
+    }
+
+    &:nth-child(2) {
+      border-left: 4px solid $secondary-color;
+    }
+
+    &:nth-child(3) {
+      border-left: 4px solid $tertiary-color;
+    }
+
+    &:nth-child(4) {
+      border-left: 4px solid $quaternary-color;
+    }
+
+    h3 {
+      margin-top: 0;
+    }
+  }
+}
+
+// Responsive adjustments
+@media screen and (max-width: 42em) {
+  .feature-cards .feature-card,
+  .level-cards .level-card {
+    width: 100%;
+    margin-bottom: 1rem;
+  }
+}
+
+// Badges
+.badge {
+  display: inline-block;
+  padding: 0.25em 0.4em;
+  font-size: 0.75em;
+  font-weight: 700;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+  vertical-align: baseline;
+  border-radius: 0.25rem;
+  margin-right: 0.5rem;
+
+  &.badge-primary {
+    background-color: $primary-color;
+    color: white;
+  }
+
+  &.badge-secondary {
+    background-color: $secondary-color;
+    color: white;
+  }
+}
+
+// Table styles
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-bottom: 1rem;
+
+  th, td {
+    padding: 0.5rem;
+    border: 1px solid #e1e4e8;
+  }
+
+  th {
+    background-color: $background-color;
+    font-weight: 600;
+  }
+
+  tr:nth-child(even) {
+    background-color: $background-color;
+  }
+}
+
+// Footer
+.site-footer {
+  border-top: 1px solid #eaecef;
+  margin-top: 2rem;
+  padding-top: 2rem;
+}
