@@ -1,46 +1,69 @@
-# GitHub Pages Configuration
-
-# Theme settings
-theme: jekyll-theme-cayman
+# Jekyll configuration for OpenAI Agents GitHub Pages
 title: OpenAI Agents for Laravel
-description: A powerful, flexible Laravel package that integrates OpenAI's AI capabilities into your applications through a progressive enhancement architecture.
-show_downloads: true
+description: Progressive enhancement architecture for OpenAI agents in Laravel
+url: https://sapiensly.github.io/openai-agents
+baseurl: /openai-agents
 
-# SEO settings
-author:
-  name: Sapiensly
-  url: https://github.com/sapiensly
+# Build settings
+markdown: kramdown
+highlighter: rouge
+permalink: pretty
 
-# Social media
-social:
-  name: Sapiensly
-  links:
-    - https://github.com/sapiensly
-    - https://packagist.org/packages/sapiensly/openai-agents
+# Collections
+collections:
+  docs:
+    output: true
+    permalink: /:collection/:name/
 
-# GitHub metadata
-github:
-  is_project_page: true
-  repository_url: https://github.com/sapiensly/openai-agents
-  owner_url: https://github.com/sapiensly
-  owner_name: Sapiensly
+# Defaults
+defaults:
+  - scope:
+      path: ""
+      type: "docs"
+    values:
+      layout: "default"
 
 # Plugins
 plugins:
   - jekyll-seo-tag
   - jekyll-sitemap
-  - jekyll-github-metadata
+  - jekyll-feed
 
-# Markdown settings
-markdown: kramdown
-kramdown:
-  input: GFM
-  syntax_highlighter: rouge
-
-# Exclude files from processing
+# Exclude from processing
 exclude:
   - Gemfile
   - Gemfile.lock
   - node_modules
   - vendor
-  - .gitignore
+  - .git
+  - .github
+
+# Include
+include:
+  - _pages
+  - assets
+
+# SEO
+author:
+  name: Sapiensly
+  email: ed@sapiensly.com
+  bio: Progressive enhancement architecture for OpenAI agents
+  location: Earth
+  links:
+    - label: GitHub
+      icon: fab fa-github
+      url: https://github.com/sapiensly
+
+# Social media
+social:
+  - name: GitHub
+    url: https://github.com/sapiensly/openai-agents
+  - name: Packagist
+    url: https://packagist.org/packages/sapiensly/openai-agents
+
+# Analytics (optional)
+google_analytics: # UA-XXXXXXXXX-X
+
+# Comments (optional)
+disqus:
+  shortname: # your-disqus-shortname 

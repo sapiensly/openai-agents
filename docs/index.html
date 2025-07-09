@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenAI Agents for Laravel - Progressive Enhancement Architecture</title>
+    <meta name="description" content="A powerful Laravel package that integrates OpenAI's AI capabilities with progressive enhancement architecture. Start simple, scale smart with our 4-level approach.">
+    <meta name="keywords" content="laravel, openai, agents, ai, chat, gpt, artificial-intelligence, php">
+
+    <!-- Open Graph -->
+    <meta property="og:title" content="OpenAI Agents for Laravel">
+    <meta property="og:description" content="Progressive enhancement architecture for OpenAI agents in Laravel">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://sapiensly.github.io/openai-agents">
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="OpenAI Agents for Laravel">
+    <meta name="twitter:description" content="Progressive enhancement architecture for OpenAI agents in Laravel">
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="landing/favicon.svg">
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: {
+                            50: '#eff6ff',
+                            500: '#3b82f6',
+                            600: '#2563eb',
+                            700: '#1d4ed8',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- Prism.js for syntax highlighting -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+
+    <!-- Marked.js for markdown parsing -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <!-- Custom styles and scripts -->
+    <link rel="stylesheet" href="landing/styles.css">
+    <script src="landing/script.js" defer></script>
+
+    <style>
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .feature-card {
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        .feature-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+        }
+        .code-block {
+            background: #1e293b;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .level-badge {
+            background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+            color: white;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        /* Documentation Modal Styles */
+        .doc-modal {
+            display: none;
+            position: fixed;
+            z-index: 10000;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(8px);
+        }
+
+        .doc-content {
+            background: linear-gradient(135deg, #f8fafc 0%, #ffffff 100%);
+            color: #222;
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            border-radius: 0;
+            overflow: auto;
+            position: relative;
+            box-shadow: none;
+            animation: modalSlideIn 0.3s ease-out;
+        }
+
+        @keyframes modalSlideIn {
+            from {
+                opacity: 0;
+                transform: scale(0.95);
+            }
+            to {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+
+        .doc-close {
+            position: fixed;
+            top: 20px;
+            right: 30px;
+            font-size: 1.5em;
+            background: rgba(255,255,255,0.7);
+            border: none;
+            cursor: pointer;
+            color: #64748b;
+            transition: all 0.2s ease;
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10001;
+            box-shadow: none;
+            font-weight: 400;
+        }
+
+        .doc-close:hover {
+            color: #1e293b;
+            background: rgba(255,255,255,0.95);
+            transform: scale(1.08);
+        }
+
+        .doc-html {
+            padding: 80px 60px 40px 60px;
+            line-height: 1.6;
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+        }
+
+        .doc-title {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+            color: white;
+            padding: 20px 60px;
+            font-size: 1.5em;
+            font-weight: 600;
+            z-index: 10000;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .doc-html h1,
+        .doc-html h2,
+        .doc-html h3,
+        .doc-html h4,
+        .doc-html h5,
+        .doc-html h6 {
+            margin-top: 2em;
+            margin-bottom: 1em;
+            font-weight: 600;
+            color: #111827;
+        }
+
+        .doc-html h1 {
+            font-size: 2em;
+            border-bottom: 2px solid #e5e7eb;
+            padding-bottom: 0.5em;
+        }
+
+        .doc-html h2 {
+            font-size: 1.5em;
+            border-bottom: 1px solid #e5e7eb;
+            padding-bottom: 0.3em;
+        }
+
+        .doc-html h3 {
+            font-size: 1.25em;
+        }
+
+        .doc-html p {
+            margin-bottom: 1em;
+            color: #374151;
+        }
+
+        .doc-html code {
+            background: #f3f4f6;
+            padding: 0.2em 0.4em;
+            border-radius: 4px;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 0.9em;
+        }
+
+        .doc-html pre {
+            background: #1f2937;
+            color: #f9fafb;
+            padding: 1em;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 1em 0;
+        }
+
+        .doc-html pre code {
+            background: none;
+            padding: 0;
+            color: inherit;
+        }
+
+        .doc-html blockquote {
+            border-left: 4px solid #3b82f6;
+            padding-left: 1em;
+            margin: 1em 0;
+            color: #6b7280;
+            font-style: italic;
+        }
+
+        .doc-html ul,
+        .doc-html ol {
+            margin: 1em 0;
+            padding-left: 2em;
+        }
+
+        .doc-html li {
+            margin-bottom: 0.5em;
+        }
+
+        .doc-html table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1em 0;
+        }
+
+        .doc-html th,
+        .doc-html td {
+            border: 1px solid #e5e7eb;
+            padding: 0.75em;
+            text-align: left;
+        }
+
+        .doc-html th {
+            background: #f9fafb;
+            font-weight: 600;
+        }
+
+        .doc-html a {
+            color: #3b82f6;
+            text-decoration: none;
+        }
+
+        .doc-html a:hover {
+            text-decoration: underline;
+        }
+
+        @media (max-width: 768px) {
+            .doc-content {
+                margin: 0;
+                padding: 0;
+                height: 100vh;
+            }
+
+            .doc-html {
+                padding: 60px 20px 20px 20px;
+                max-width: none;
+            }
+
+            .doc-title {
+                padding: 15px 20px;
+                font-size: 1.2em;
+            }
+
+            .doc-close {
+                top: 15px;
+                right: 20px;
+                width: 45px;
+                height: 45px;
+                font-size: 2em;
+            }
+        }
+
+        /* Loading spinner animation */
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <!-- Navigation -->
+    <nav class="bg-white shadow-sm border-b border-gray-200 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between items-center h-16">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <h1 class="text-xl font-bold text-gray-900">OpenAI Agents</h1>
+                    </div>
+                </div>
+                <div class="hidden md:block">
+                    <div class="ml-10 flex items-baseline space-x-4">
+                        <a href="#features" class="text-gray-500 hover:text-gray-700 px-3 py-2 rounded-md text-sm font-medium">Features</a>
+                        <a href="#quick-start" class="text-gray-500 hover:text-gray-700 px-3 py-2 rounded-md text-sm font-medium">Quick Start</a>
+                        <a href="#documentation" class="text-gray-500 hover:text-gray-700 px-3 py-2 rounded-md text-sm font-medium">Docs</a>
+                        <a href="https://github.com/sapiensly/openai-agents" class="bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-md text-sm font-medium">GitHub</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="gradient-hero text-white">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-24">
+            <div class="text-center">
+                <h1 class="text-4xl md:text-6xl font-bold mb-6">
+                    OpenAI Agents for Laravel
+                </h1>
+                <p class="text-xl md:text-2xl mb-8 max-w-3xl mx-auto">
+                    A powerful, flexible Laravel package that integrates OpenAI's AI capabilities through a
+                    <span class="font-semibold">progressive enhancement architecture</span>.
+                    Start simple, scale smart with our 4-level approach.
+                </p>
+                <div class="flex flex-col sm:flex-row gap-4 justify-center">
+                    <a href="#quick-start" class="btn-primary">
+                        Get Started
+                    </a>
+                    <a href="https://github.com/sapiensly/openai-agents" class="btn-secondary text-white border-white hover:bg-white hover:text-primary-600">
+                        View on GitHub
+                    </a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Stats Section -->
+    <section class="bg-white py-16">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-8 text-center">
+                <div class="stats-card">
+                    <div class="stats-info">4</div>
+                    <div class="text-gray-600">Progressive Levels</div>
+                </div>
+                <div class="stats-card">
+                    <div class="stats-info">20+</div>
+                    <div class="text-gray-600">Artisan Commands</div>
+                </div>
+                <div class="stats-card">
+                    <div class="stats-info">100%</div>
+                    <div class="text-gray-600">Laravel Native</div>
+                </div>
+                <div class="stats-card">
+                    <div class="stats-info">MIT</div>
+                    <div class="text-gray-600">License</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section id="features" class="py-24 bg-gray-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl md:text-4xl font-bold text-gray-900 mb-4">
+                    Progressive Enhancement Architecture
+                </h2>
+                <p class="text-xl text-gray-600 max-w-3xl mx-auto">
+                    Start with simple chat and gradually scale up to enterprise-level autonomous agents.
+                    Our 4-level approach ensures you only implement the complexity you need.
+                </p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
+                <!-- Level 1 -->
+                <div class="feature-card-enhanced">
+                    <div class="flex items-center mb-4">
+                        <span class="level-badge-enhanced">Level 1</span>
+                    </div>
+                    <h3 class="text-xl font-semibold text-gray-900 mb-3">Conversational Agent</h3>
+                    <p class="text-gray-600 mb-4">Simple chat, Q&A, onboarding, FAQ bots. Perfect for getting started.</p>
+                    <div class="code-block-enhanced p-4 mb-4">
+                        <pre><code class="language-php">$response = Agent::simpleChat('Hello world');</code></pre>
+                    </div>
+                </div>
+
+                <!-- Level 2 -->
+                <div class="feature-card-enhanced">
+                    <div class="flex items-center mb-4">
+                        <span class="level-badge-enhanced">Level 2</span>
+                    </div>
+                    <h3 class="text-xl font-semibold text-gray-900 mb-3">Agent with Tools</h3>
+                    <p class="text-gray-600 mb-4">Functions, APIs, calculations, file operations. Plus OpenAI official tools.</p>
+                    <div class="code-block-enhanced p-4 mb-4">
+                        <pre><code class="language-php">$agent->registerCodeInterpreter();
+$agent->registerRetrieval(['k' => 3]);
+$agent->registerWebSearch();</code></pre>
+                    </div>
+                </div>
+
+                <!-- Level 3 -->
+                <div class="feature-card-enhanced">
+                    <div class="flex items-center mb-4">
+                        <span class="level-badge-enhanced">Level 3</span>
+                    </div>
+                    <h3 class="text-xl font-semibold text-gray-900 mb-3">Multi-Agents</h3>
+                    <p class="text-gray-600 mb-4">Multiple specialized agents collaborate seamlessly with handoffs and workflows.</p>
+                    <div class="code-block-enhanced p-4 mb-4">
+                        <pre><code class="language-php">$runner->setHandoffOrchestrator(
+    app(HandoffOrchestrator::class)
+);</code></pre>
+                    </div>
+                </div>
+
+                <!-- Level 4 -->
+                <div class="feature-card-enhanced">
+                    <div class="flex items-center mb-4">
+                        <span class="level-badge-enhanced">Level 4</span>
+                    </div>
+                    <h3 class="text-xl font-semibold text-gray-900 mb-3">Autonomous Agents</h3>
+                    <p class="text-gray-600 mb-4">Self-monitoring, decision-making agents that can initiate actions and adapt.</p>
+                    <div class="code-block-enhanced p-4 mb-4">
+                        <pre><code class="language-php">$agent = Agent::create([
+    'mode' => 'autonomous',
+    'autonomy_level' => 'high'
+]);</code></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Key Features -->
+    <section class="py-24 bg-white">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl md:text-4xl font-bold text-gray-900 mb-4">
+                    Advanced Capabilities
+                </h2>
+                <p class="text-xl text-gray-600 max-w-3xl mx-auto">
+                    Enterprise-ready features for production applications
+                </p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                <div class="feature-card-enhanced">
+                    <div class="w-12 h-12 bg-primary-100 rounded-lg flex items-center justify-center mb-4">
+                        <svg class="w-6 h-6 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                        </svg>
+                    </div>
+                    <h3 class="text-xl font-semibold text-gray-900 mb-3">MCP Support</h3>
+                    <p class="text-gray-600">Model Context Protocol with HTTP, STDIO, and SSE transports for seamless tool integration.</p>
+                </div>
+
+                <div class="feature-card-enhanced">
+                    <div class="w-12 h-12 bg-primary-100 rounded-lg flex items-center justify-center mb-4">
+                        <svg class="w-6 h-6 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                    </div>
+                    <h3 class="text-xl font-semibold text-gray-900 mb-3">Guardrails</h3>
+                    <p class="text-gray-600">Input/output validation and transformation to ensure safe AI operations.</p>
+                </div>
+
+                <div class="feature-card-enhanced">
+                    <div class="w-12 h-12 bg-primary-100 rounded-lg flex items-center justify-center mb-4">
+                        <svg class="w-6 h-6 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                        </svg>
+                    </div>
+                    <h3 class="text-xl font-semibold text-gray-900 mb-3">Tracing & Observability</h3>
+                    <p class="text-gray-600">Comprehensive debugging and monitoring with detailed logging and metrics.</p>
+                </div>
+
+                <div class="feature-card-enhanced">
+                    <div class="w-12 h-12 bg-primary-100 rounded-lg flex items-center justify-center mb-4">
+                        <svg class="w-6 h-6 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 4V2a1 1 0 011-1h8a1 1 0 011 1v2m-9 0h10m-10 0a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V6a2 2 0 00-2-2"></path>
+                        </svg>
+                    </div>
+                    <h3 class="text-xl font-semibold text-gray-900 mb-3">Voice Pipeline</h3>
+                    <p class="text-gray-600">Audio transcription and text-to-speech capabilities for voice-enabled applications.</p>
+                </div>
+
+                <div class="feature-card-enhanced">
+                    <div class="w-12 h-12 bg-primary-100 rounded-lg flex items-center justify-center mb-4">
+                        <svg class="w-6 h-6 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                        </svg>
+                    </div>
+                    <h3 class="text-xl font-semibold text-gray-900 mb-3">Streaming Support</h3>
+                    <p class="text-gray-600">Real-time responses with streaming capabilities for interactive experiences.</p>
+                </div>
+
+                <div class="feature-card-enhanced">
+                    <div class="w-12 h-12 bg-primary-100 rounded-lg flex items-center justify-center mb-4">
+                        <svg class="w-6 h-6 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path>
+                        </svg>
+                    </div>
+                    <h3 class="text-xl font-semibold text-gray-900 mb-3">Security Controls</h3>
+                    <p class="text-gray-600">Role-based permissions, capability-based access control, and comprehensive security features.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Quick Start Section -->
+    <section id="quick-start" class="py-24 bg-gray-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl md:text-4xl font-bold text-gray-900 mb-4">
+                    Quick Start
+                </h2>
+                <p class="text-xl text-gray-600 max-w-3xl mx-auto">
+                    Get up and running in minutes with our progressive enhancement approach
+                </p>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-12">
+                <div>
+                    <h3 class="text-2xl font-semibold text-gray-900 mb-6">Installation</h3>
+                    <div class="space-y-4">
+                        <div class="bg-white rounded-lg p-6 shadow-sm">
+                            <h4 class="font-semibold text-gray-900 mb-2">1. Install via Composer</h4>
+                            <div class="code-block p-4">
+                                <pre><code class="language-bash">composer require sapiensly/openai-agents</code></pre>
+                            </div>
+                        </div>
+
+                        <div class="bg-white rounded-lg p-6 shadow-sm">
+                            <h4 class="font-semibold text-gray-900 mb-2">2. Publish Configuration</h4>
+                            <div class="code-block p-4">
+                                <pre><code class="language-bash">php artisan vendor:publish --tag=config --provider="Sapiensly\\OpenaiAgents\\AgentServiceProvider"</code></pre>
+                            </div>
+                        </div>
+
+                        <div class="bg-white rounded-lg p-6 shadow-sm">
+                            <h4 class="font-semibold text-gray-900 mb-2">3. Set Environment Variables</h4>
+                            <div class="code-block p-4">
+                                <pre><code class="language-env">OPENAI_API_KEY=your-openai-api-key-here
+OPENAI_MODEL=gpt-4o
+AGENTS_PROGRESSIVE_LEVEL=1</code></pre>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div>
+                    <h3 class="text-2xl font-semibold text-gray-900 mb-6">Usage Examples</h3>
+                    <div class="space-y-4">
+                        <div class="bg-white rounded-lg p-6 shadow-sm">
+                            <h4 class="font-semibold text-gray-900 mb-2">Simple Chat</h4>
+                            <div class="code-block p-4">
+                                <pre><code class="language-php">use Sapiensly\OpenaiAgents\Agent;
+
+$response = Agent::simpleChat('Hello world');
+echo $response;</code></pre>
+                            </div>
+                        </div>
+
+                        <div class="bg-white rounded-lg p-6 shadow-sm">
+                            <h4 class="font-semibold text-gray-900 mb-2">With Tools</h4>
+                            <div class="code-block p-4">
+                                <pre><code class="language-php">$runner = Agent::runner();
+$runner->registerTool('calculator', function($args) {
+    return eval("return {$args['expression']};");
+});
+$response = $runner->run('Calculate 15 * 23');</code></pre>
+                            </div>
+                        </div>
+
+                        <div class="bg-white rounded-lg p-6 shadow-sm">
+                            <h4 class="font-semibold text-gray-900 mb-2">OpenAI Official Tools</h4>
+                            <div class="code-block p-4">
+                                <pre><code class="language-php">$agent = Agent::create(['model' => 'gpt-4o']);
+$agent->registerCodeInterpreter();
+$agent->registerRetrieval(['k' => 3]);
+$response = $agent->chat('Analyze this data');</code></pre>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Documentation Section -->
+    <section id="documentation" class="py-24 bg-white">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl md:text-4xl font-bold text-gray-900 mb-4">
+                    Documentation
+                </h2>
+                <p class="text-xl text-gray-600 max-w-3xl mx-auto">
+                    Comprehensive guides for every feature, from basic to advanced
+                </p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                <a href="QUICK_START.md" class="doc-card">
+                    <h3 class="text-xl font-semibold text-gray-900 mb-3">Quick Start Guide</h3>
+                    <p class="text-gray-600 mb-4">Get up and running with basic agent functionality</p>
+                    <div class="doc-link text-primary-600 font-semibold">Read More →</div>
+                </a>
+
+                <a href="PROGRESSIVE_ENHANCEMENT.md" class="doc-card">
+                    <h3 class="text-xl font-semibold text-gray-900 mb-3">Progressive Enhancement</h3>
+                    <p class="text-gray-600 mb-4">Understanding our 4-level architecture approach</p>
+                    <div class="doc-link text-primary-600 font-semibold">Read More →</div>
+                </a>
+
+                <a href="TOOLS.md" class="doc-card">
+                    <h3 class="text-xl font-semibold text-gray-900 mb-3">Tools & Integrations</h3>
+                    <p class="text-gray-600 mb-4">Comprehensive guide to tool registration and usage</p>
+                    <div class="doc-link text-primary-600 font-semibold">Read More →</div>
+                </a>
+
+                <a href="HANDOFF.md" class="doc-card">
+                    <h3 class="text-xl font-semibold text-gray-900 mb-3">Multi-Agent Handoffs</h3>
+                    <p class="text-gray-600 mb-4">Advanced handoff system for agent collaboration</p>
+                    <div class="doc-link text-primary-600 font-semibold">Read More →</div>
+                </a>
+
+                <a href="MCP.md" class="doc-card">
+                    <h3 class="text-xl font-semibold text-gray-900 mb-3">Model Context Protocol</h3>
+                    <p class="text-gray-600 mb-4">MCP support with HTTP, STDIO, and SSE transports</p>
+                    <div class="doc-link text-primary-600 font-semibold">Read More →</div>
+                </a>
+
+                <a href="TESTING_WITH_COMMANDS.md" class="doc-card">
+                    <h3 class="text-xl font-semibold text-gray-900 mb-3">Testing & Commands</h3>
+                    <p class="text-gray-600 mb-4">50+ Artisan commands for testing and debugging</p>
+                    <div class="doc-link text-primary-600 font-semibold">Read More →</div>
+                </a>
+
+                <a href="GUARDRAILS.md" class="doc-card">
+                    <h3 class="text-xl font-semibold text-gray-900 mb-3">Security & Guardrails</h3>
+                    <p class="text-gray-600 mb-4">Input/output validation and security controls</p>
+                    <div class="doc-link text-primary-600 font-semibold">Read More →</div>
+                </a>
+
+                <a href="TRACING.md" class="doc-card">
+                    <h3 class="text-xl font-semibold text-gray-900 mb-3">Tracing & Observability</h3>
+                    <p class="text-gray-600 mb-4">Debugging, monitoring, and performance tracking</p>
+                    <div class="doc-link text-primary-600 font-semibold">Read More →</div>
+                </a>
+
+                <a href="VOICE.md" class="doc-card">
+                    <h3 class="text-xl font-semibold text-gray-900 mb-3">Voice Pipeline</h3>
+                    <p class="text-gray-600 mb-4">Audio transcription and text-to-speech capabilities</p>
+                    <div class="doc-link text-primary-600 font-semibold">Read More →</div>
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA Section -->
+    <section class="cta-section text-white py-16">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+            <h2 class="text-3xl md:text-4xl font-bold mb-4">
+                Ready to Get Started?
+            </h2>
+            <p class="text-xl mb-8 max-w-2xl mx-auto">
+                Join the community and start building intelligent applications with OpenAI Agents for Laravel.
+            </p>
+            <div class="flex flex-col sm:flex-row gap-4 justify-center">
+                <a href="https://github.com/sapiensly/openai-agents" class="btn-primary">
+                    View on GitHub
+                </a>
+                <a href="https://packagist.org/packages/sapiensly/openai-agents" class="btn-secondary text-white border-white hover:bg-white hover:text-primary-600">
+                    Install via Composer
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer-enhanced text-white py-12">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-8">
+                <div>
+                    <h3 class="text-lg font-semibold mb-4">OpenAI Agents</h3>
+                    <p class="text-gray-400">
+                        Progressive enhancement architecture for OpenAI agents in Laravel.
+                    </p>
+                </div>
+                <div>
+                    <h4 class="text-lg font-semibold mb-4">Documentation</h4>
+                    <ul class="space-y-2 text-gray-400">
+                        <li><a href="QUICK_START.md" class="footer-link">Quick Start</a></li>
+                        <li><a href="PROGRESSIVE_ENHANCEMENT.md" class="footer-link">Progressive Enhancement</a></li>
+                        <li><a href="TOOLS.md" class="footer-link">Tools & Integrations</a></li>
+                        <li><a href="HANDOFF.md" class="footer-link">Multi-Agent Handoffs</a></li>
+                    </ul>
+                </div>
+                <div>
+                    <h4 class="text-lg font-semibold mb-4">Resources</h4>
+                    <ul class="space-y-2 text-gray-400">
+                        <li><a href="https://github.com/sapiensly/openai-agents" class="footer-link">GitHub Repository</a></li>
+                        <li><a href="https://packagist.org/packages/sapiensly/openai-agents" class="footer-link">Packagist</a></li>
+                        <li><a href="TESTING_WITH_COMMANDS.md" class="footer-link">Testing Guide</a></li>
+                        <li><a href="MCP.md" class="footer-link">MCP Documentation</a></li>
+                    </ul>
+                </div>
+                <div>
+                    <h4 class="text-lg font-semibold mb-4">Community</h4>
+                    <ul class="space-y-2 text-gray-400">
+                        <li><a href="https://github.com/sapiensly/openai-agents/issues" class="footer-link">Issues</a></li>
+                        <li><a href="https://github.com/sapiensly/openai-agents/discussions" class="footer-link">Discussions</a></li>
+                        <li><a href="https://github.com/sapiensly/openai-agents/blob/main/LICENSE" class="footer-link">License</a></li>
+                        <li><a href="https://github.com/sapiensly/openai-agents/blob/main/CHANGELOG.md" class="footer-link">Changelog</a></li>
+                    </ul>
+                </div>
+            </div>
+            <div class="border-t border-gray-800 mt-8 pt-8 text-center text-gray-400">
+                <p>&copy; 2025 Sapiensly. MIT License.</p>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Documentation Modal -->
+    <div id="doc-modal" class="doc-modal">
+        <div id="doc-content" class="doc-content">
+            <button id="doc-close" class="doc-close" title="Close documentation" aria-label="Close documentation">
+            <span aria-hidden="true" style="margin-top: -5px">&times;</span>
+            </button>
+            <div id="doc-title" class="doc-title"></div>
+            <div id="doc-html" class="doc-html"></div>
+        </div>
+    </div>
+
+    <script>
+        // Enhanced smooth scrolling for anchor links
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                const targetId = this.getAttribute('href');
+                const target = document.querySelector(targetId);
+
+                if (target) {
+                    const headerHeight = document.querySelector('nav').offsetHeight;
+                    const targetPosition = target.offsetTop - headerHeight - 20;
+
+                    window.scrollTo({
+                        top: targetPosition,
+                        behavior: 'smooth'
+                    });
+
+                    // Update URL without page jump
+                    history.pushState(null, null, targetId);
+                }
+            });
+        });
+
+        // Enhanced navigation effects
+        window.addEventListener('scroll', function() {
+            const nav = document.querySelector('nav');
+            if (window.scrollY > 100) {
+                nav.classList.add('nav-enhanced');
+            } else {
+                nav.classList.remove('nav-enhanced');
+            }
+        });
+    </script>
+</body>
+</html>

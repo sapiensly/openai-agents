@@ -1,65 +1,121 @@
-# OpenAI Agents for Laravel - GitHub Pages
+# OpenAI Agents GitHub Pages Landing Site
 
-This directory contains the GitHub Pages website for the OpenAI Agents for Laravel package.
+This directory contains the assets and configuration for the GitHub Pages landing site for the sapiensly/openai-agents Laravel package.
 
 ## Structure
 
-- `index.md` - The main content of the GitHub Pages site
-- `_config.yml` - Configuration for GitHub Pages
-- `assets/css/style.scss` - Custom CSS styles for the site
+```
+landing/
+├── styles.css          # Custom CSS with enhanced styles and animations
+├── script.js           # JavaScript for interactivity and features
+├── favicon.svg         # Custom SVG favicon
+├── _config.yml         # Jekyll configuration for GitHub Pages
+└── README.md           # This file
+```
 
-## How to Update
+## Features
 
-### Content Updates
+### Enhanced Styling (`styles.css`)
+- Custom animations and transitions
+- Enhanced gradient backgrounds
+- Improved button and card styles
+- Dark mode support
+- Responsive design enhancements
+- Print-friendly styles
 
-To update the content of the GitHub Pages site, edit the `index.md` file. This file uses Markdown syntax with some HTML for more complex layouts.
+### Interactive Features (`script.js`)
+- Scroll progress indicator
+- Intersection Observer animations
+- Enhanced smooth scrolling
+- Code block copy functionality
+- Animated stats counters
+- Search functionality for documentation
+- Theme toggle (light/dark mode)
+- Mobile menu functionality
+- Performance monitoring
 
-### Style Updates
+### Custom Favicon (`favicon.svg`)
+- Modern SVG design
+- Represents AI/neural networks and Laravel
+- Gradient colors matching the brand
+- Scalable and lightweight
 
-To update the styling of the GitHub Pages site, edit the `assets/css/style.scss` file. This file uses SCSS syntax and extends the default Jekyll theme.
+### Jekyll Configuration (`_config.yml`)
+- SEO optimization
+- Social media integration
+- Analytics support
+- Proper permalink structure
+- Plugin configuration
 
-### Configuration Updates
+## Customization
 
-To update the configuration of the GitHub Pages site, edit the `_config.yml` file. This file uses YAML syntax and configures various aspects of the Jekyll site.
+### Colors
+The primary brand colors are defined in the CSS:
+- Primary: `#3b82f6` (blue)
+- Secondary: `#1d4ed8` (dark blue)
+- Accent: `#f59e0b` (orange)
+
+### Adding New Sections
+1. Add HTML structure to `index.html`
+2. Add corresponding styles to `styles.css`
+3. Add any JavaScript functionality to `script.js`
+
+### Modifying Animations
+Animations are defined in `styles.css` using CSS keyframes:
+- `fadeInUp`: Elements fade in from bottom
+- `slideInLeft`: Elements slide in from left
+- `slideInRight`: Elements slide in from right
+- `pulse`: Subtle pulsing effect
+
+### Adding Analytics
+1. Uncomment and configure Google Analytics in `_config.yml`
+2. Add tracking code to `index.html` if needed
+3. Use the `trackEvent()` function in `script.js` for custom events
+
+## Deployment
+
+The site is automatically deployed when changes are pushed to the `main` branch. GitHub Pages will:
+
+1. Use the `docs/` directory as the source
+2. Process the `index.html` file as the homepage
+3. Apply the Jekyll configuration from `landing/_config.yml`
+4. Serve static assets from the `landing/` directory
 
 ## Local Development
 
-To test the GitHub Pages site locally:
+To test the site locally:
 
-1. Install Jekyll and Bundler:
-   ```bash
-   gem install jekyll bundler
-   ```
+1. Install Jekyll: `gem install jekyll bundler`
+2. Navigate to the `docs/` directory
+3. Run: `jekyll serve`
+4. Visit `http://localhost:4000`
 
-2. Create a Gemfile in this directory:
-   ```ruby
-   source 'https://rubygems.org'
-   gem 'github-pages', group: :jekyll_plugins
-   ```
+## Browser Support
 
-3. Install dependencies:
-   ```bash
-   bundle install
-   ```
+The site is designed to work on:
+- Chrome 60+
+- Firefox 55+
+- Safari 12+
+- Edge 79+
 
-4. Run the local server:
-   ```bash
-   bundle exec jekyll serve
-   ```
+## Performance
 
-5. Open your browser to `http://localhost:4000`
+The site is optimized for:
+- Fast loading times (< 3 seconds)
+- Mobile responsiveness
+- SEO best practices
+- Accessibility standards
 
-## Publishing
+## Contributing
 
-The GitHub Pages site is automatically published when changes are pushed to the repository. The site is available at:
+When modifying the landing site:
 
-https://sapiensly.github.io/openai-agents/
+1. Test changes locally first
+2. Ensure mobile responsiveness
+3. Validate HTML and CSS
+4. Test in multiple browsers
+5. Update this README if needed
 
-## Best Practices
+## License
 
-- Keep the content up-to-date with the latest features and changes in the package
-- Use clear, concise language that is easy to understand
-- Include code examples for common use cases
-- Organize content in a logical, hierarchical structure
-- Use consistent formatting and styling throughout the site
-- Test all links and code examples before publishing
+This landing site follows the same MIT license as the main package. 
