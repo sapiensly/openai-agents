@@ -4,9 +4,8 @@ declare(strict_types=1);
 namespace Sapiensly\OpenaiAgents;
 
 use Illuminate\Support\Facades\App;
-use OpenAI\Factory;
+use OpenAI\Factory as OpenAIFactory;
 use Sapiensly\OpenaiAgents\Handoff\HandoffOrchestrator;
-use Sapiensly\OpenaiAgents\Tests\MockOpenAI;
 use Sapiensly\OpenaiAgents\Tracing\Tracing;
 
 class AgentManager
@@ -31,24 +30,23 @@ class AgentManager
      * and system prompt. It checks for the usage of a mock OpenAI class in a test
      * environment, otherwise defaults to creating a Factory-based client.
      *
-     * @param array|null $options The configuration options for the Agent. Defaults to `null`.
+     * @param AgentOptions|array|null $options The configuration options for the Agent. Defaults to `null`.
      * @param string|null $systemPrompt The system prompt to initialize the Agent. Defaults to `null`.
      * @return Agent A new Agent instance.
      */
-    public function agent(array|null $options = null, string|null $systemPrompt = null): Agent
+    public function agent(AgentOptions|array|null $options = null, string|null $systemPrompt = null): Agent
     {
-        $options ??= [];
-        $options = array_replace_recursive($this->config['default'] ?? [], $options);
-
-        // Check if we're in a test environment using the mock class
-        if (class_exists(MockOpenAI::class) &&
-            MockOpenAI::$factory !== null) {
-            $client = MockOpenAI::factory()->withApiKey($this->config['api_key'])->make();
-        } else {
-            $client = (new Factory())->withApiKey($this->config['api_key'])->make();
+        // Convert an array to AgentOptions if needed
+        if (is_array($options) || $options === null) {
+            $options = $options === null ? [] : $options;
         }
 
-        return new Agent($client, $options, $systemPrompt);
+        $defaultOptions = AgentOptions::fromArray($this->config['default'] ?? []);
+        $agent_options = $defaultOptions->merge($options);
+
+
+        $client = (new OpenAIFactory())->withApiKey($this->config['api_key'])->make();
+        return new Agent($client, $agent_options, $systemPrompt);
     }
 
     /**
@@ -117,7 +115,7 @@ class AgentManager
         if ($level >= 1 && $this->isProgressiveFeatureEnabled('auto_tools')) {
             $defaultTools = $this->config['progressive']['default_tools'] ?? [];
             $runner = new Runner($agent);
-            
+
             foreach ($defaultTools as $toolName) {
                 $runner->registerTool($toolName, $this->getDefaultTool($toolName));
             }

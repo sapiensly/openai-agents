@@ -2,23 +2,21 @@
 
 namespace Sapiensly\OpenaiAgents\Facades;
 
+use Exception;
 use Illuminate\Support\Facades\Facade;
+use InvalidArgumentException;
 use Sapiensly\OpenaiAgents\Agent as AgentClass;
+use Sapiensly\OpenaiAgents\AgentManager;
+use Sapiensly\OpenaiAgents\AgentOptions;
 use Sapiensly\OpenaiAgents\Runner;
 
 /**
- * @method static string simpleChat(string $message, array $options = [])
  * @method static Runner runner(array $options = [])
  * @method static AgentClass use(string $agentName)
  * @method static AgentClass create(array $config)
- * @method static AgentClass agent(array $options = [], string $systemPrompt = null)
- * @method static Runner createRunner(AgentClass $agent = null, int $maxTurns = null)
- * @method static int getProgressiveLevel()
- * @method static bool isProgressiveFeatureEnabled(string $feature)
- * @method static AgentClass autoConfigureAgent(AgentClass $agent)
  *
- * @see \Sapiensly\OpenaiAgents\Agent
- * @see \Sapiensly\OpenaiAgents\AgentManager
+ * @see AgentClass
+ * @see AgentManager
  */
 class Agent extends Facade
 {
@@ -27,7 +25,7 @@ class Agent extends Facade
      *
      * @return string
      */
-    protected static function getFacadeAccessor()
+    protected static function getFacadeAccessor(): string
     {
         return 'agent';
     }
@@ -35,9 +33,9 @@ class Agent extends Facade
     /**
      * Get the agent manager instance.
      *
-     * @return \Sapiensly\OpenaiAgents\AgentManager
+     * @return AgentManager
      */
-    public static function manager()
+    public static function manager(): AgentManager
     {
         return app('agent.manager');
     }
@@ -45,11 +43,11 @@ class Agent extends Facade
     /**
      * Create a simple agent instance.
      *
-     * @param array $options
+     * @param AgentOptions|array|null $options
      * @param string|null $systemPrompt
-     * @return \Sapiensly\OpenaiAgents\Agent
+     * @return AgentClass
      */
-    public static function agent(array $options = [], ?string $systemPrompt = null)
+    public static function agent(AgentOptions|array|null $options = null, string|null $systemPrompt = null): AgentClass
     {
         return static::manager()->agent($options, $systemPrompt);
     }
@@ -58,23 +56,29 @@ class Agent extends Facade
      * Simple chat method for quick responses.
      *
      * @param string $message
-     * @param array $options
+     * @param AgentOptions|array|null $options
      * @return string
+     * @throws Exception
      */
-    public static function simpleChat(string $message, array $options = []): string
+    public static function simpleChat(string $message, AgentOptions|array|null $options = null): string
     {
+        if (empty(trim($message))) {
+            throw new InvalidArgumentException('Message cannot be empty.');
+        }
+
         $agent = static::agent($options);
         return $agent->chat($message);
+
     }
 
     /**
      * Create a runner instance.
      *
-     * @param \Sapiensly\OpenaiAgents\Agent|null $agent
+     * @param AgentClass|null $agent
      * @param int|null $maxTurns
-     * @return \Sapiensly\OpenaiAgents\Runner
+     * @return Runner
      */
-    public static function createRunner(?AgentClass $agent = null, ?int $maxTurns = null)
+    public static function createRunner(AgentClass|null $agent = null, ?int $maxTurns = null): Runner
     {
         return static::manager()->runner($agent, $maxTurns);
     }
@@ -103,11 +107,11 @@ class Agent extends Facade
     /**
      * Auto-configure an agent based on progressive level.
      *
-     * @param \Sapiensly\OpenaiAgents\Agent $agent
-     * @return \Sapiensly\OpenaiAgents\Agent
+     * @param AgentClass $agent
+     * @return AgentClass
      */
     public static function autoConfigureAgent(AgentClass $agent): AgentClass
     {
         return static::manager()->autoConfigureAgent($agent);
     }
-} 
+}

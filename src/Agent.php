@@ -1,5 +1,5 @@
 <?php
-//declare(strict_types=1);
+declare(strict_types=1);
 
 namespace Sapiensly\OpenaiAgents;
 
@@ -7,6 +7,7 @@ use Exception;
 use Illuminate\Support\Facades\Log;
 use OpenAI\Client;
 use Random\RandomException;
+use Sapiensly\OpenaiAgents\Events\AgentResponseGenerated;
 use Sapiensly\OpenaiAgents\Tools\ToolCacheManager;
 
 class Agent
@@ -21,9 +22,9 @@ class Agent
     /**
      * Configuration options for the agent.
      *
-     * @var array
+     * @var AgentOptions|null
      */
-    protected array $options;
+    protected AgentOptions|null $options;
 
     /**
      * Array of messages in the conversation.
@@ -44,35 +45,35 @@ class Agent
      *
      * @var string|null
      */
-    protected ?string $id = null;
+    protected string|null $id = null;
 
     /**
      * The tool cache manager for caching tool results.
      *
      * @var ToolCacheManager|null
      */
-    protected ?ToolCacheManager $toolCacheManager = null;
+    protected ToolCacheManager|null $toolCacheManager = null;
 
     /**
      * Level 4: Autonomous Agent mode ("autonomous" or null)
      *
      * @var string|null
      */
-    protected ?string $mode = null;
+    protected string|null $mode = null;
 
     /**
      * Level 4: Autonomy level ("low", "medium", "high")
      *
      * @var string|null
      */
-    protected ?string $autonomyLevel = null;
+    protected string|null $autonomyLevel = null;
 
     /**
      * Level 4: Capabilities for autonomous agents
      *
      * @var array|null
      */
-    protected ?array $capabilities = null;
+    protected array|null $capabilities = null;
 
     /**
      * OpenAI official tools (code_interpreter, retrieval, web_search)
@@ -86,30 +87,48 @@ class Agent
      *
      * @var array|null
      */
-    protected ?array $ragConfig = null;
+    protected array|null $ragConfig = null;
+
+    /**
+     * Total tokens used by the agent.
+     */
+    protected int $totalTokens = 0;
 
     /**
      * Create a new Agent instance.
      *
      * @param Client $client The OpenAI client instance
-     * @param array|null $options Configuration options for the agent
+     * @param AgentOptions|array|null $options Configuration options for the agent
      * @param string|null $systemPrompt Optional system prompt to initialize the conversation
      */
-    public function __construct(Client $client, array|null $options = null, string|null $systemPrompt = null, string|null $id = null, ?ToolCacheManager $toolCacheManager = null)
+    public function __construct(Client $client, AgentOptions|array|null $options = null, string|null $systemPrompt = null, string|null $id = null, ToolCacheManager|null $toolCacheManager = null)
     {
-        $options ??= [];
+        $agentOptions = new AgentOptions();
+
+        if ($options instanceof AgentOptions) {
+            $agentOptions = $options;
+        } elseif (is_array($options)) {
+            $agentOptions = AgentOptions::fromArray($options);
+        }
+
         $this->client = $client;
-        $this->options = $options;
+        $this->options = $agentOptions;
         $this->id = $id ?? 'agent_' . uniqid();
         $this->toolCacheManager = $toolCacheManager;
 
         // Level 4: Autonomous Agent config
-        $this->mode = $options['mode'] ?? null;
-        $this->autonomyLevel = $options['autonomy_level'] ?? null;
-        $this->capabilities = $options['capabilities'] ?? null;
+        $this->mode = $agentOptions->get('mode') ?? null;
+        $this->autonomyLevel = $agentOptions->get('autonomy_level') ?? null;
+        $this->capabilities = $agentOptions->get('capabilities') ?? null;
 
-        if ($systemPrompt !== null) {
-            $this->messages[] = ['role' => 'system', 'content' => $systemPrompt];
+        // Handle system prompt from either parameter or options
+        $finalSystemPrompt = $systemPrompt;
+        if ($finalSystemPrompt === null && $agentOptions->get('system_prompt') !== null) {
+            $finalSystemPrompt = $agentOptions->get('system_prompt');
+        }
+
+        if (!empty($finalSystemPrompt)) {
+            $this->messages[] = ['role' => 'system', 'content' => $finalSystemPrompt];
         }
     }
 
@@ -128,7 +147,7 @@ class Agent
      *
      * @return string|null The agent's ID
      */
-    public function getId(): ?string
+    public function getId(): string|null
     {
         return $this->id;
     }
@@ -170,11 +189,216 @@ class Agent
     /**
      * Get the agent's options.
      *
-     * @return array The agent options
+     * @return array|null The agent options
      */
-    public function getOptions(): array
+    public function getOptions(): array|null
     {
-        return $this->options;
+        return $this->options->toArray();
+    }
+
+    /**
+     * Get an individual option by key.
+     *
+     * @param string $key The option key
+     * @return string|array|float|null The option value or null if not set
+     */
+    public function getOption(string $key): string|array|float|null
+    {
+        $agentOptions = $this->options;
+        return $agentOptions->get($key) ?? null;
+    }
+
+    /**
+     * Set individual option Model
+     *
+     * @param string $value The value to set
+     */
+    public function setModel(string $value): self
+    {
+        $this->options->setModel($value);
+        return $this;
+    }
+
+    /**
+     * Set individual option Temperature
+     *
+     * @param float $value The value to set
+     */
+    public function setTemperature(float $value): self
+    {
+        $this->options->setTemperature($value);
+        return $this;
+    }
+
+    /**
+     * Set individual option Top P
+     *
+     * @param float $value The value to set
+     */
+    public function setTopP(float $value): self
+    {
+        $this->options->setTopP($value);
+        return $this;
+    }
+
+    /**
+     * Set individual option Mode
+     *
+     * @param string $value The value to set
+     */
+    public function setMode(string $value): self
+    {
+        $this->options->setMode($value);
+        return $this;
+    }
+
+    /**
+     * Set individual option Autonomy Level
+     *
+     * @param string $value The value to set
+     */
+    public function setAutonomyLevel(string $value): self
+    {
+        $this->options->setAutonomyLevel($value);
+        return $this;
+    }
+
+    /**
+     * Set individual option Capabilities
+     *
+     * @param array $value The value to set
+     */
+    public function setCapabilities(array $value): self
+    {
+        $this->options->setCapabilities($value);
+        return $this;
+    }
+
+    /**
+     * Set individual option Max Turns
+     *
+     * @param int $value The value to set
+     */
+    public function setMaxTurns(int $value): self
+    {
+        $this->options->setMaxTurns($value);
+        return $this;
+    }
+
+    /**
+     * Set individual option Max Input Tokens
+     *
+     * @param int $value The value to set
+     */
+    public function setMaxInputTokens(int $value): self
+    {
+        $this->options->setMaxInputTokens($value);
+        return $this;
+    }
+
+    /**
+     * Set individual option Max Conversation Tokens
+     *
+     * @param int $value The value to set
+     */
+    public function setMaxConversationTokens(int $value): self
+    {
+        $this->options->setMaxConversationTokens($value);
+        return $this;
+    }
+
+    /**
+     * Set individual option System Prompt
+     *
+     * @param string $value The value to set
+     */
+    public function setSystemPrompt(string $value): self
+    {
+        $this->options->setSystemPrompt($value);
+        return $this;
+    }
+
+    /**
+     * Set individual option Instructions
+     *
+     * @param string $value The value to set
+     */
+    public function setInstructions(string $value): self
+    {
+        $this->options->setInstructions($value);
+        return $this;
+    }
+
+    /**
+     * Set or update the system prompt for this agent.
+     *
+     * This method allows updating the agent's system prompt after initialization.
+     * If a system message already exists, it will be replaced. If not, it will be added.
+     *
+     * @param string $systemPrompt The system prompt to set
+     * @return self Returns the Agent instance for method chaining
+     */
+    public function updateConversationSystemPrompt(string $systemPrompt): self
+    {
+        // Check if a system message already exists
+        foreach ($this->messages as $key => $message) {
+            if ($message['role'] === 'system') {
+                // Replace existing system message
+                $this->messages[$key]['content'] = $systemPrompt;
+                return $this;
+            }
+        }
+
+        // No system message found, add as the first message
+        array_unshift($this->messages, [
+            'role' => 'system',
+            'content' => $systemPrompt
+        ]);
+
+        return $this;
+    }
+
+    /**
+     * Retrieves the content of the system prompt from the conversation messages.
+     *
+     * Iterates through the messages to find a message with the 'role' set to 'system'.
+     * If found, returns its 'content'; otherwise, returns null.
+     *
+     * @return string|null The system prompt content or null if not found.
+     */
+    public function getConversationSystemPrompt(): string|null
+    {
+        foreach ($this->messages as $message) {
+            if ($message['role'] === 'system') {
+                return $message['content'];
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Adds a developer message to the message collection.
+     *
+     * @param string $message The message content provided by the developer.
+     * @return self
+     */
+    public function addDeveloperMessage(string $message): self
+    {
+        $this->messages[] = [
+            'role' => 'developer',
+            'content' => $message
+        ];
+        return $this;
+    }
+
+    /**
+     * Get the conversation instructions.
+     *
+     * @return string
+     */
+    public function getConversationInstructions(): string
+    {
+        return $this->options->get('instructions') ?? '';
     }
 
     /**
@@ -210,47 +434,48 @@ class Agent
     }
 
     /**
-     * Set or update the system prompt for this agent.
+     * Get the output type for structured responses.
      *
-     * This method allows updating the agent's system prompt after initialization.
-     * If a system message already exists, it will be replaced. If not, it will be added.
-     *
-     * @param string $systemPrompt The system prompt to set
-     * @return self Returns the Agent instance for method chaining
+     * @return mixed The expected output type/schema
      */
-    public function setSystemPrompt(string $systemPrompt): self
+    public function getOutputType(): mixed
     {
-        // Check if a system message already exists
-        foreach ($this->messages as $key => $message) {
-            if ($message['role'] === 'system') {
-                // Replace existing system message
-                $this->messages[$key]['content'] = $systemPrompt;
-                return $this;
-            }
-        }
-
-        // No system message found, add as the first message
-        array_unshift($this->messages, [
-            'role' => 'system',
-            'content' => $systemPrompt
-        ]);
-
-        return $this;
+        return $this->outputType;
     }
+
+    /**
+     * Get the total tokens used by the agent.*
+     */
+    public function getTokenUsage(): int
+    {
+        return $this->totalTokens;
+    }
+
+
+    /**
+     * Add used tokens to the agent's total.
+     */
+    private function addTokenUsage(int $tokens): void
+    {
+        $this->totalTokens += $tokens;
+    }
+
+
 
     // ========================================
     // PROGRESSIVE ENHANCEMENT - LEVEL 0 METHODS
     // ========================================
 
     /**
-     * Simple chat method for Level 0 progressive enhancement.
+     * Simple chat method for Level 1 progressive enhancement.
      * Provides one-line usage for basic chat functionality.
      *
      * @param string $message The message to send
-     * @param array $options Optional configuration options
+     * @param AgentOptions|array $options Optional configuration options
      * @return string The agent's response
+     * @throws Exception
      */
-    public static function simpleChat(string $message, array $options = []): string
+    public static function simpleChat(string $message, AgentOptions|array $options = []): string
     {
         $manager = app(AgentManager::class);
         $agent = $manager->agent($options);
@@ -258,13 +483,13 @@ class Agent
     }
 
     /**
-     * Create a simple runner for Level 1 progressive enhancement.
+     * Create a simple runner for Level 2 progressive enhancement.
      * Provides basic tool integration with minimal configuration.
      *
-     * @param array $options Optional configuration options
+     * @param AgentOptions|array $options Optional configuration options
      * @return Runner A configured runner instance
      */
-    public static function runner(array $options = []): Runner
+    public static function runner(AgentOptions|array $options = []): Runner
     {
         $manager = app(AgentManager::class);
         $agent = $manager->agent($options);
@@ -287,7 +512,7 @@ class Agent
         }
 
         $manager = app(AgentManager::class);
-        
+
         // Merge agent-specific options with defaults
         $options = array_merge(
             config('agents.default', []),
@@ -295,7 +520,9 @@ class Agent
             ['model' => $config['model'] ?? config('agents.default.model')]
         );
 
-        $agent = $manager->agent($options, $config['system_prompt'] ?? null);
+        // Create AgentOptions instance
+        $agentOptions = AgentOptions::fromArray($options);
+        $agent = $manager->agent($agentOptions, $config['system_prompt'] ?? null);
 
         // Auto-register tools if configured
         if (isset($config['tools']) && is_array($config['tools'])) {
@@ -311,36 +538,48 @@ class Agent
     /**
      * Create a new agent declaratively for Level 2 progressive enhancement.
      *
-     * @param array $config Agent configuration
+     * @param AgentOptions|array $config Agent configuration
      * @return Agent The configured agent instance
      */
-    public static function create(array $config): self
+    public static function create(AgentOptions|array $config): self
     {
         $manager = app(AgentManager::class);
-        
-        $options = array_merge(
-            config('agents.default', []),
-            $config['options'] ?? [],
-            ['model' => $config['model'] ?? config('agents.default.model')]
-        );
 
-        // Level 4: Autonomous Agent config
-        if (isset($config['mode'])) {
-            $options['mode'] = $config['mode'];
-        }
-        if (isset($config['autonomy_level'])) {
-            $options['autonomy_level'] = $config['autonomy_level'];
-        }
-        if (isset($config['capabilities'])) {
-            $options['capabilities'] = $config['capabilities'];
+        // If $config is already an AgentOptions instance, use it directly
+        if ($config instanceof AgentOptions) {
+            $agentOptions = $config;
+            $systemPrompt = null; // AgentOptions already contains system_prompt if set
+            $tools = null;
+        } else {
+            // Otherwise, create an AgentOptions instance from the array
+            $options = array_merge(
+                config('agents.default', []),
+                $config['options'] ?? [],
+                ['model' => $config['model'] ?? config('agents.default.model')]
+            );
+
+            // Level 4: Autonomous Agent config
+            if (isset($config['mode'])) {
+                $options['mode'] = $config['mode'];
+            }
+            if (isset($config['autonomy_level'])) {
+                $options['autonomy_level'] = $config['autonomy_level'];
+            }
+            if (isset($config['capabilities'])) {
+                $options['capabilities'] = $config['capabilities'];
+            }
+
+            $agentOptions = AgentOptions::fromArray($options);
+            $systemPrompt = $config['system_prompt'] ?? null;
+            $tools = $config['tools'] ?? null;
         }
 
-        $agent = $manager->agent($options, $config['system_prompt'] ?? null);
+        $agent = $manager->agent($agentOptions, $systemPrompt);
 
         // Auto-register tools if configured
-        if (isset($config['tools']) && is_array($config['tools'])) {
+        if ($tools !== null && is_array($tools)) {
             $runner = new Runner($agent);
-            foreach ($config['tools'] as $toolName) {
+            foreach ($tools as $toolName) {
                 $runner->registerTool($toolName, self::getDefaultTool($toolName));
             }
         }
@@ -378,7 +617,7 @@ class Agent
             'file_operations' => function($args) {
                 $operation = $args['operation'] ?? 'read';
                 $path = $args['path'] ?? '';
-                
+
                 switch ($operation) {
                     case 'read':
                         return file_exists($path) ? file_get_contents($path) : "File not found: {$path}";
@@ -392,13 +631,13 @@ class Agent
             'statistics' => function($args) {
                 $numbers = $args['numbers'] ?? [];
                 if (empty($numbers)) return "No numbers provided";
-                
+
                 $count = count($numbers);
                 $sum = array_sum($numbers);
                 $avg = $sum / $count;
                 $min = min($numbers);
                 $max = max($numbers);
-                
+
                 return "Statistics: Count={$count}, Sum={$sum}, Avg={$avg}, Min={$min}, Max={$max}";
             },
             'chart_generator' => function($args) {
@@ -490,9 +729,9 @@ class Agent
             'k' => 5,
             'r' => 0.7
         ], $config);
-        
+
         Log::info("[Agent] RAG enabled with vector store: {$vectorStoreId}");
-        
+
         return $this;
     }
 
@@ -503,30 +742,31 @@ class Agent
      * @param array $files Array of file paths to upload
      * @param array $config Additional configuration
      * @return self
+     * @throws Exception
      */
     public function setupRAG(string $name, array $files = [], array $config = []): self
     {
         // Create vector store
         $vectorStoreResult = $this->runTool('vector_store', 'create', ['name' => $name]);
         $vectorStoreData = json_decode($vectorStoreResult, true);
-        
+
         if (!$vectorStoreData['success']) {
             throw new \Exception("Failed to create vector store: " . ($vectorStoreData['error'] ?? 'Unknown error'));
         }
-        
+
         $vectorStoreId = $vectorStoreData['vector_store_id'];
-        
+
         // Upload files if provided
         $fileIds = [];
         foreach ($files as $filePath) {
             $fileResult = $this->runTool('file_upload', 'upload', ['file_path' => $filePath]);
             $fileData = json_decode($fileResult, true);
-            
+
             if ($fileData['success']) {
                 $fileIds[] = $fileData['file_id'];
             }
         }
-        
+
         // Add files to vector store if any
         if (!empty($fileIds)) {
             $this->runTool('vector_store', 'add_files', [
@@ -534,7 +774,7 @@ class Agent
                 'file_ids' => $fileIds
             ]);
         }
-        
+
         // Enable RAG with the vector store
         return $this->enableRAG($vectorStoreId, $config);
     }
@@ -545,6 +785,7 @@ class Agent
      * @param string $identifier Vector store ID (vs_...) o nombre
      * @param array $config Configuración adicional
      * @return self
+     * @throws Exception
      */
     public function useRAG(string $identifier, array $config = []): self
     {
@@ -626,16 +867,7 @@ class Agent
             return $this->chatWithRetrieval($message, $toolDefinitions, $outputType);
         }
 
-        // Check if we have OpenAI official tools registered
-        $hasOpenAITools = !empty($this->openAITools);
-        
-        if ($hasOpenAITools) {
-            // Use Responses API for OpenAI official tools
-            return $this->chatWithResponsesAPI($message, $toolDefinitions, $outputType);
-        } else {
-            // Use Chat Completions API for function tools
-            return $this->chatWithChatAPI($message, $toolDefinitions, $outputType);
-        }
+        return $this->chatWithResponsesAPI($message, $toolDefinitions, $outputType);
     }
 
     /**
@@ -649,6 +881,7 @@ class Agent
      */
     private function chatWithRetrieval(string $message, array $toolDefinitions, mixed $outputType): string
     {
+        Log::info("[Agent Debug] Chat with chatWithRetrieval: {$message}");
         if (!empty($toolDefinitions)) {
             throw new \Exception('No se pueden usar tools de tipo function junto con retrieval en la misma llamada.');
         }
@@ -755,25 +988,65 @@ class Agent
     }
 
     /**
-     * Chat using the Responses API (for OpenAI official tools)
+     * Chat using the Responses API
+     * @throws Exception
      */
     private function chatWithResponsesAPI(string $message, array $toolDefinitions, mixed $outputType): string
     {
+        //Log::info("[Agent Debug] Chat with chatWithResponsesAPI message: {$message}");
+        $startTime = microtime(true);
+
+        // Set max turns memory from options or default to 10
+        $maxTurns = $this->options->get('max_turns') ?? config('agent.default.max_turns', 10);
+        // Set max input tokens from options or default to 4096
+        $maxInputTokens = $this->options->get('max_input_tokens') ?? config('agent.default.max_turns', 4096);
+
+        // Get the limited message history (last N turns + system prompt)
+        $limitedMessages = $this->getLimitedMessages($maxTurns, $maxInputTokens);
+
+        $inputItems = [];
+        foreach ($limitedMessages as $msg) {
+            $inputItems[] = [
+                'role' => $msg['role'],  // 'user', 'assistant', 'developer'
+                'content' => $this->buildContentBlocks($msg),
+            ];
+        }
+
+        // New user message
+        $current = ['content' => $message];
+        // TODO: Add support for images and audio URLs
+        if (!empty($imageUrl)) $current['image_url'] = $imageUrl;
+        if (!empty($audioUrl)) $current['audio_url'] = $audioUrl;
+
+        $inputItems[] = [
+            'role' => 'user',
+            'content' =>  $this->buildContentBlocks(['role' => 'user'] + $current),
+        ];
+
+        // Set conversation token limit
+        $inputTokenCount = 0;
+        $conversationTokenLimit = $this->options->get('max_conversation_tokens') ?? config('agent.default.max_conversation_tokens', 10000);
+        foreach ($inputItems as $item) {
+            // Estimate token count for each item
+            if (isset($item['content']) && $item['content'][0]['type'] === 'input_text') {
+                $itemTokenCount = (int)(strlen($item['content'][0]['text']) / 4); // Estimate of token count
+                $inputTokenCount += $itemTokenCount;
+            }
+        }
+
+        $totalUsed = $this->getTokenUsage();
+        if ($totalUsed + $inputTokenCount >= $conversationTokenLimit) {
+            throw new \RuntimeException("Limit reached for this conversation. Start a new conversation.");
+        }
+
+        // Prepare the parameters for the Responses API
         $params = [
-            'model' => $this->options['model'] ?? 'gpt-4o',
-            'input' => [
-                [
-                    'role' => 'user',
-                    'content' => [
-                        [
-                            'type' => 'input_text',
-                            'text' => $message
-                        ]
-                    ]
-                ]
-            ],
-            'temperature' => $this->options['temperature'] ?? null,
-            'top_p' => $this->options['top_p'] ?? null,
+            'model' => $this->options->get('model') ?? 'gpt-4o',
+            'instructions' => $this->options->get('instructions') ?? '', // instructions replaces system prompt in Responses API
+            'input' => $inputItems,
+            'temperature' => $this->options->get('temperature') ?? null,
+            'top_p' => $this->options->get('top_p') ?? null,
+            //'modalities' => ['text', 'audio'], // request both formats (optional)
         ];
 
         // Add OpenAI official tools
@@ -814,7 +1087,7 @@ class Agent
                     $functionTools[] = $functionTool;
                 }
             }
-            
+
             if (!empty($functionTools)) {
                 $params['tools'] = array_merge($params['tools'] ?? [], $functionTools);
             }
@@ -826,28 +1099,46 @@ class Agent
             $params['response_format'] = ['type' => 'json_object'];
         }
 
+
         try {
             $response = $this->client->responses()->create($params);
-            
+            $endTime = microtime(true);
+
             // Extract content from Responses API response
-            $content = '';
-            if (isset($response['output'])) {
-                foreach ($response['output'] as $output) {
-                    if (isset($output['type']) && $output['type'] === 'text') {
-                        $content .= $output['text'] ?? '';
+            $response_content = '';
+            $role = $response->output[0]->role ?? 'assistant';
+
+            $outputTokenCount = 0;
+            if ($response->output) {
+                foreach ($response->output as $output) {
+                    foreach ($output->content as $content) {
+                        if (isset($content->type) && $content->type === 'output_text') {
+                            $response_content .=  $content->text ?? '';
+                            $outputTokenCount += (int) (strlen($content->text) / 4); // Estimate of token count
+                        }
                     }
                 }
             }
 
-            if (!empty($content)) {
-                $this->messages[] = ['role' => 'assistant', 'content' => $content];
+            $this->addTokenUsage($inputTokenCount + $outputTokenCount);
+
+            if (!empty($response_content)) {
+                $this->messages[] = ['role' => $role, 'content' => $response_content];
             }
 
-            return $content;
+            // EMIT THE EVENT WITH MESSAGE AND SOME ANALYTICS DATA
+            $this->fireResponseEvent($message, $response_content, $startTime, $endTime, $response, $this->getTokenUsage() , 'Responses API');
+
+            return $response_content;
 
         } catch (Exception $e) {
-            Log::error("[Agent Debug] Responses API error: {$e->getMessage()}");
+            Log::error("[Agent Debug] Chat With Responses API error: {$e->getMessage()}");
+
+            // EMIT ERROR EVENT
+            $this->fireErrorEvent($message, $e);
+
             throw $e;
+
         }
     }
 
@@ -856,11 +1147,13 @@ class Agent
      */
     private function chatWithChatAPI(string $message, array $toolDefinitions, mixed $outputType): string
     {
+        Log::info("[Agent Debug] Chat with chatWithChatAPI: {$message}");
+
         $params = [
-            'model' => $this->options['model'] ?? 'gpt-4o',
+            'model' => $this->options->get('model') ?? 'gpt-4o',
             'messages' => $this->messages,
-            'temperature' => $this->options['temperature'] ?? null,
-            'top_p' => $this->options['top_p'] ?? null,
+            'temperature' => $this->options->get('temperature') ?? null,
+            'top_p' => $this->options->get('top_p') ?? null,
         ];
 
         // Add function tools
@@ -938,10 +1231,10 @@ class Agent
 
                 // Hacer la segunda llamada para obtener la respuesta final
                 $finalParams = [
-                    'model' => $this->options['model'] ?? 'gpt-4o',
+                    'model' => $this->options->get('model') ?? 'gpt-4o',
                     'messages' => $this->messages,
-                    'temperature' => $this->options['temperature'] ?? null,
-                    'top_p' => $this->options['top_p'] ?? null,
+                    'temperature' => $this->options->get('temperature') ?? null,
+                    'top_p' => $this->options->get('top_p') ?? null,
                 ];
 
                 $finalResponse = $this->client->chat()->create($finalParams);
@@ -978,6 +1271,8 @@ class Agent
      */
     public function chatStreamed(string $message, array|null $toolDefinitions = null, mixed $outputType = null): iterable
     {
+        Log::info("[Agent Debug] Chat with chatStreamed: {$message}");
+
         $toolDefinitions ??= [];
 
         $this->messages[] = ['role' => 'user', 'content' => $message];
@@ -990,7 +1285,7 @@ class Agent
 
         // Check if we have OpenAI official tools registered
         $hasOpenAITools = !empty($this->openAITools);
-        
+
         if ($hasOpenAITools) {
             // For now, Responses API doesn't support streaming with official tools
             // So we'll use the non-streaming version
@@ -1014,17 +1309,19 @@ class Agent
      */
     private function chatStreamedWithRetrieval(string $message, array $toolDefinitions, mixed $outputType): iterable
     {
+        Log::info("[Agent Debug] Chat with chatStreamedWithRetrieval: {$message}");
+
         if (!empty($toolDefinitions)) {
             throw new \Exception('No se pueden usar tools de tipo function junto con retrieval en la misma llamada.');
         }
-        
+
         // Intentar usar el tool de retrieval oficial de OpenAI con streaming
         try {
             $params = [
-                'model' => $this->options['model'] ?? 'gpt-4o',
+                'model' => $this->options->get('model') ?? 'gpt-4o',
                 'messages' => $this->messages,
-                'temperature' => $this->options['temperature'] ?? null,
-                'top_p' => $this->options['top_p'] ?? null,
+                'temperature' => $this->options->get('temperature') ?? null,
+                'top_p' => $this->options->get('top_p') ?? null,
                 'stream' => true,
                 'tools' => [
                     [
@@ -1038,33 +1335,33 @@ class Agent
                 ],
                 'tool_choice' => 'auto',
             ];
-            
+
             if ($outputType !== null) {
                 $params['response_format'] = ['type' => 'json_object'];
             }
-            
+
             $stream = $this->client->chat()->createStreamed($params);
             $fullContent = '';
             $toolCalls = [];
-            
+
             foreach ($stream as $response) {
                 $choice = $response['choices'][0];
                 $delta = $choice['delta'] ?? [];
                 $finishReason = $choice['finishReason'] ?? $choice['finish_reason'] ?? null;
-                
+
                 // Handle content streaming
                 if (isset($delta['content'])) {
                     $content = $delta['content'];
                     $fullContent .= $content;
                     yield $content;
                 }
-                
+
                 // Handle tool calls streaming
                 if (isset($delta['tool_calls'])) {
                     foreach ($delta['tool_calls'] as $toolCallDelta) {
                         if (isset($toolCallDelta['index'])) {
                             $index = $toolCallDelta['index'];
-                            
+
                             if (!isset($toolCalls[$index])) {
                                 $toolCalls[$index] = [
                                     'id' => '',
@@ -1072,56 +1369,56 @@ class Agent
                                     'function' => ['name' => '', 'arguments' => '']
                                 ];
                             }
-                            
+
                             if (isset($toolCallDelta['id'])) {
                                 $toolCalls[$index]['id'] = $toolCallDelta['id'];
                             }
-                            
+
                             if (isset($toolCallDelta['function']['name'])) {
                                 $toolCalls[$index]['function']['name'] = $toolCallDelta['function']['name'];
                             }
-                            
+
                             if (isset($toolCallDelta['function']['arguments'])) {
                                 $toolCalls[$index]['function']['arguments'] .= $toolCallDelta['function']['arguments'];
                             }
                         }
                     }
                 }
-                
+
                 // If finished with tool calls, execute them
                 if ($finishReason === 'tool_calls' && !empty($toolCalls)) {
                     // Add assistant message with tool calls
                     $this->messages[] = ['role' => 'assistant', 'content' => $fullContent, 'tool_calls' => $toolCalls];
-                    
+
                     // Execute tool calls
                     foreach ($toolCalls as $toolCall) {
                         $functionName = $toolCall['function']['name'];
                         $arguments = $toolCall['function']['arguments'];
-                        
+
                         $toolResult = $this->executeToolCall($functionName, $arguments, $toolDefinitions);
-                        
+
                         $this->messages[] = [
                             'role' => 'tool',
                             'tool_call_id' => $toolCall['id'],
                             'content' => $toolResult
                         ];
                     }
-                    
+
                     // Make second call for final response
                     $finalParams = [
-                        'model' => $this->options['model'] ?? 'gpt-4o',
+                        'model' => $this->options->get('model') ?? 'gpt-4o',
                         'messages' => $this->messages,
-                        'temperature' => $this->options['temperature'] ?? null,
-                        'top_p' => $this->options['top_p'] ?? null,
+                        'temperature' => $this->options->get('temperature') ?? null,
+                        'top_p' => $this->options->get('top_p') ?? null,
                         'stream' => true,
                     ];
-                    
+
                     $finalStream = $this->client->chat()->createStreamed($finalParams);
-                    
+
                     foreach ($finalStream as $finalResponse) {
                         $finalChoice = $finalResponse['choices'][0];
                         $finalDelta = $finalChoice['delta'] ?? [];
-                        
+
                         if (isset($finalDelta['content'])) {
                             $content = $finalDelta['content'];
                             yield $content;
@@ -1129,12 +1426,12 @@ class Agent
                     }
                 }
             }
-            
+
             // Add final message to history if not already added
             if (!empty($fullContent) && $finishReason !== 'tool_calls') {
                 $this->messages[] = ['role' => 'assistant', 'content' => $fullContent];
             }
-            
+
         } catch (\Exception $e) {
             // Fallback a RAG tradicional en streaming
             if (strpos($e->getMessage(), "tools[0].function") !== false || strpos($e->getMessage(), "Missing required parameter") !== false) {
@@ -1165,10 +1462,10 @@ class Agent
                 $this->messages[] = ['role' => 'system', 'content' => $contextMsg];
                 $this->messages[] = ['role' => 'user', 'content' => $message];
                 $params = [
-                    'model' => $this->options['model'] ?? 'gpt-4o',
+                    'model' => $this->options->get('model') ?? 'gpt-4o',
                     'messages' => $this->messages,
-                    'temperature' => $this->options['temperature'] ?? null,
-                    'top_p' => $this->options['top_p'] ?? null,
+                    'temperature' => $this->options->get('temperature') ?? null,
+                    'top_p' => $this->options->get('top_p') ?? null,
                     'stream' => true,
                 ];
                 if ($outputType !== null) {
@@ -1194,11 +1491,13 @@ class Agent
      */
     private function chatStreamedWithChatAPI(string $message, array $toolDefinitions, mixed $outputType): iterable
     {
+        Log::info("[Agent Debug] Chat with chatStreamedWithRetrieval: {$message}");
+
         $params = [
-            'model' => $this->options['model'] ?? 'gpt-4o',
+            'model' => $this->options->get('model') ?? 'gpt-4o',
             'messages' => $this->messages,
-            'temperature' => $this->options['temperature'] ?? null,
-            'top_p' => $this->options['top_p'] ?? null,
+            'temperature' => $this->options->get('temperature') ?? null,
+            'top_p' => $this->options->get('top_p') ?? null,
             'stream' => true, // Enable streaming
         ];
 
@@ -1267,7 +1566,7 @@ class Agent
                     foreach ($delta['tool_calls'] as $toolCallDelta) {
                         if (isset($toolCallDelta['index'])) {
                             $index = $toolCallDelta['index'];
-                            
+
                             if (!isset($toolCalls[$index])) {
                                 $toolCalls[$index] = [
                                     'id' => '',
@@ -1312,15 +1611,15 @@ class Agent
 
                     // Make second call for final response
                     $finalParams = [
-                        'model' => $this->options['model'] ?? 'gpt-4o',
+                        'model' => $this->options->get('model') ?? 'gpt-4o',
                         'messages' => $this->messages,
-                        'temperature' => $this->options['temperature'] ?? null,
-                        'top_p' => $this->options['top_p'] ?? null,
+                        'temperature' => $this->options->get('temperature') ?? null,
+                        'top_p' => $this->options->get('top_p') ?? null,
                         'stream' => true,
                     ];
 
                     $finalStream = $this->client->chat()->createStreamed($finalParams);
-                    
+
                     foreach ($finalStream as $finalResponse) {
                         $finalChoice = $finalResponse['choices'][0];
                         $finalDelta = $finalChoice['delta'] ?? [];
@@ -1604,7 +1903,7 @@ class Agent
                 if (isset($tool['callback']) && is_callable($tool['callback'])) {
                     try {
                         $args = json_decode($arguments, true) ?? [];
-                        
+
                         // Validate arguments if there's a schema
                         if (isset($tool['schema']) && is_array($tool['schema'])) {
                             $validatorClass = \Sapiensly\OpenaiAgents\Tools\ToolArgumentValidator::class;
@@ -1626,11 +1925,11 @@ class Agent
 
                         // Execute tool and cache result
                         $result = (string) $tool['callback']($args);
-                        
+
                         if ($this->toolCacheManager && !$this->toolCacheManager->shouldBypassCache($functionName, $args)) {
                             $this->toolCacheManager->cacheResult($functionName, $args, $result);
                         }
-                        
+
                         return $result;
                     } catch (\Exception $e) {
                         Log::error("[Agent Debug] Error executing tool: {$e->getMessage()}");
@@ -1642,5 +1941,177 @@ class Agent
 
         return "Function {$functionName} executed (no implementation found)";
     }
-}
 
+    /**
+     * Get limited messages preserving the system message and recent conversation.
+     *
+     * @param int|null $maxTurns Maximum number of turns to keep (user + assistant pairs)
+     * @param int|null $maxInputTokens
+     * @return array Limited message history
+     */
+    private function getLimitedMessages(int|null $maxTurns = null, int|null $maxInputTokens = null): array
+    {
+        $maxTurns ??= config('agents.default.max_turns', 10);
+        $maxInputTokens = $maxInputTokens ?? config('agents.default.max_input_tokens', 4096);
+        if (empty($this->messages)) {
+            return [];
+        }
+
+        // Separar mensajes del sistema
+        $systemMessages = [];
+        $conversationMessages = [];
+
+        foreach ($this->messages as $message) {
+            if ($message['role'] === 'system') {
+                $systemMessages[] = $message;
+            } else {
+                $conversationMessages[] = $message;
+            }
+        }
+
+        // Limitar por turnos primero (n * 2 mensajes)
+        $maxConversationMessages = $maxTurns * 2;
+        if (count($conversationMessages) > $maxConversationMessages) {
+            $conversationMessages = array_slice($conversationMessages, -$maxConversationMessages);
+        }
+
+        // Ahora aplicar control de tokens estimados (tokens ≈ strlen/4)
+        $trimmed = [];
+        $totalTokens = 0;
+
+        // Recorrer de forma inversa (del más nuevo al más antiguo)
+        foreach (array_reverse($conversationMessages) as $msg) {
+            $content = is_string($msg['content'])
+                ? $msg['content']
+                : json_encode($msg['content']);
+
+            $tokens = (int)(strlen($content) / 4); // estimación simple
+
+            if ($totalTokens + $tokens > $maxInputTokens) {
+                break;
+            }
+
+            $trimmed[] = $msg;
+            $totalTokens += $tokens;
+        }
+
+        // Restaurar orden cronológico
+        $trimmed = array_reverse($trimmed);
+
+        // Combinar mensajes del sistema con los de conversación limitados
+        return [...$systemMessages, ...$trimmed];
+    }
+
+
+    /**
+     * Build content blocks based on the message structure.
+     *
+     * This method parses the input message to construct an array of content blocks.
+     * It supports various content formats such as structured content, plain text,
+     * images, and placeholders for future types like audio.
+     *
+     * @param array $msg The input message data containing content definitions.
+     *
+     * @return array An array of content blocks constructed from the input message.
+     */
+    private function buildContentBlocks(array $msg): array
+    {
+        $blocks = [];
+
+        // Already structured? Keep it
+        if (!empty($msg['content'][0]['type'])) {
+            return $msg['content'];
+        }
+
+        if ($msg['role'] === 'assistant') {
+            // Echoing assistant content: use output_text
+            $blocks[] = ['type' => 'output_text', 'text' => $msg['content']];
+        } else {
+            // user or developer: input blocks
+            $blocks[] = ['type' => 'input_text', 'text' => $msg['content']];
+
+            if (!empty($msg['image_url'])) {
+                $blocks[] = [
+                    'type' => 'input_image',
+                    'image_url' => ['url' => $msg['image_url']],
+                ];
+            }
+            if (!empty($msg['audio_url'])) {
+                $blocks[] = [
+                    'type' => 'input_audio',
+                    'audio_url' => ['url' => $msg['audio_url']],
+                ];
+            }
+        }
+
+        return $blocks;
+    }
+
+    /**
+     * Handles the firing of a response event after processing an API response.
+     *
+     * @param string $message The input message for which a response was generated.
+     * @param string $response The generated response from the system.
+     * @param float $startTime The timestamp indicating when the response generation started.
+     * @param float $endTime The timestamp indicating when the response generation ended.
+     * @param mixed $apiResponse A response object or structure received from the API.
+     * @param int $totalUsedTokens The estimated total number of tokens used in the conversation.
+     * @param string|null $api_method The specific method or endpoint alias used during the API interaction, if available.
+     *
+     * @return void
+     */
+    private function fireResponseEvent(string $message, string $response, float $startTime, float $endTime, $apiResponse, int $totalTokenUsage, string|null $api_method = null ): void
+    {
+        $metadata = [
+            'model' => $this->options->get('model') ?? 'gpt-4o',
+            'temperature' => $this->options->get('temperature'),
+            'top_p' => $this->options->get('top_p'),
+            'response_time' => round(($endTime - $startTime) * 1000, 2), // ms
+            'message_count' => count($this->messages),
+            'tools_used' => !empty($this->openAITools),
+            'openai_tools' => $this->openAITools,
+            'output_type' => $this->outputType ? 'structured' : 'text',
+            'usage' => $apiResponse->usage ?? null,
+            'estimated_total_token_usage' => $totalTokenUsage,
+            'timestamp' => now()->toISOString(),
+            'api_method' => $api_method,
+            'success' => true,
+        ];
+
+        event(new AgentResponseGenerated(
+            $this->getId(),
+            $message,
+            $response,
+            $metadata
+        ));
+    }
+
+    /**
+     * Fire the error event.
+     */
+    private function fireErrorEvent(string $message, Exception $exception): void
+    {
+        $metadata = [
+            'model' => $this->options->get('model') ?? 'gpt-4o',
+            'temperature' => $this->options->get('temperature'),
+            'top_p' => $this->options->get('top_p'),
+            'message_count' => count($this->messages),
+            'tools_used' => !empty($this->openAITools),
+            'openai_tools' => $this->openAITools,
+            'error' => $exception->getMessage(),
+            'error_code' => $exception->getCode(),
+            'error_type' => get_class($exception),
+            'timestamp' => now()->toISOString(),
+            'api_method' => 'responses',
+            'success' => false,
+        ];
+
+        event(new AgentResponseGenerated(
+            $this->getId(),
+            $message,
+            '',
+            $metadata
+        ));
+    }
+
+}

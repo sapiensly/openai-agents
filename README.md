@@ -42,16 +42,96 @@ This package implements a **4-level progressive enhancement architecture** that 
 
 ### **Level 1: Conversational Agent**
 **Concept:** Simple chat, Q&A, onboarding, FAQ bots.
+
+Use the `Agent` facade for quick agent implementation:
 ```php
-$response = Agent::simpleChat('Hello world');
+use Sapiensly\OpenaiAgents\Facades\Agent;
+
+// Simple chat with default options for testing, no message history
+$response = Agent::simpleChat('Hello world'); 
 ```
-**Config:**
+
+Agent creation with default options (set in config/agents.php)
 ```php
-'progressive' => [
-    'level' => 1,
-    'auto_configure' => true,
-],
+use Sapiensly\OpenaiAgents\Facades\Agent;
+
+// Agent creation with default options (set in config/agents.php) and message history
+$agent = Agent::agent();
+$response = $agent->chat('Hello world');
 ```
+You can override the default options at agent creation:
+```php
+use Sapiensly\OpenaiAgents\Facades\Agent;
+
+$agent = Agent::agent([
+    'model' => 'gpt-3.5-turbo',
+    'temperature' => 0.4,
+    'instructions' => 'Always answer in Spanish.',
+]);
+$agent->chat('Hello world');
+```
+Use AgentOptions for a type-safe way to set options at agent creation:
+```php
+use Sapiensly\OpenaiAgents\AgentOptions;
+use Sapiensly\OpenaiAgents\Facades\Agent;
+
+$options = new AgentOptions()
+    ->setModel('gpt-3.5-turbo')
+    ->setTemperature(0.4)
+    ->setInstructions('Always answer in Spanish.');
+$agent = Agent::agent($options); 
+$agent->chat('Hello world');
+```
+You can also change options after agent creation:
+```php
+$agent->setTemperature(1)->setInstructions('Always answer in French.');
+$agent->chat('Hello world');
+ ```
+``Check what options the agent is currently using:
+```php
+$agent->getOptions();
+/* [
+    "model" => "gpt-4o",
+    ... // other options
+  ]
+*/
+```
+Message history is automatically managed, allowing multi-turn conversations:
+```php
+$agent->chat('What is the capital of France?');
+$response = $agent->chat('What was my last question?');
+echo $response; // Your last question was: "What is the capital of France?"
+```
+Set a custom limit for the message history:
+```php
+$agent->setMaxTurns(5); // Limit history to 5 user messages, default is 10 (set in config/agents.php)
+```
+NOTE: The message history of a conversation is stored in memory (RAM) within each instance of the Agent class. This history is not automatically persisted to any database and remains in memory only while the agent instance is active.
+If you need to persist the history, you should implement your own logic to save and retrieve the messages using the methods provided by the Agent class.
+
+Use getMessages() to retrieve the current conversation's message history:
+```php
+$messages = $agent->getMessages();
+```
+You can also control token usage by setting a maximum token limit for the input and total tokens used in the conversation. Provided token usage is just an estimation for plain English text, implement your own logic to calculate the exact token usage based on your needs.
+```php
+$agent->setMaxInputTokens(1000); // Limit input tokens to 1000, default is 4096 (set in config/agents.php)
+$agent->setMaxConversationTokens(5000); // Limit total conversation tokens to 5000, default is 10,000 (set in config/agents.php)
+// Check current token usage
+$tokenUsage = $agent->getTokenUsage();
+```
+
+
+Agent responses fire an event `AgentResponseGenerated` that you can listen to for logging or other purposes:
+```php
+use Sapiensly\OpenaiAgents\Events\AgentResponseGenerated;
+use Illuminate\Support\Facades\Event;
+Event::listen(AgentResponseGenerated::class, function ($event) {
+    Log::info('Agent response: ' . $event->response);
+});
+```
+
+TODO: Agents with retrieval-augmented generation (RAG) capabilities. explained here.
 
 ### **Level 2: Agent with Tools**
 **Concept:** Agent can use tools (functions, APIs, calculations, file ops, etc).
@@ -160,10 +240,11 @@ echo $result; // [AUTONOMOUS] Executed: Monitor system and fix issues automatica
 ## Installation
 
 ### Prerequisites
-- PHP 8.1 or higher
-- Laravel 10.0 or higher
+- PHP 8.3 or higher
+- Laravel 12.0 or higher
+- OpenAI PHP client v0.14.0 or higher
 - OpenAI API key
-- Composer
+- Redis
 
 ### Step 1: Install via Composer
 ```bash
