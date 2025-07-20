@@ -131,10 +131,28 @@ Event::listen(AgentResponseGenerated::class, function ($event) {
 });
 ```
 
-TODO: Agents with retrieval-augmented generation (RAG) capabilities. explained here.
-
 ### **Level 2: Agent with Tools**
-**Concept:** Agent can use tools (functions, APIs, calculations, file ops, etc).
+**Concept:** Agent can use tools (retrieval, functions, APIs, etc).
+
+**OpenAI Official Tools**
+1. RAG (Retrieval-Augmented Generation)—Allows agents to retrieve relevant documents from a knowledge base.
+```php
+use Sapiensly\OpenaiAgents\Facades\Agent
+$agent = Agent::agent();
+$agent->useRAG($vectorStoreId); // $vectorStoreId is ID or name of an existing vector store in your OpenAI account. Array of vector store IDs is supported.
+$agent->useRAG($vectorStoreId, $maxNumResults); // Optional: specify max number of results to return, default set in config/agents.php
+```
+TODO: Function calling!
+
+
+```php
+$agent = Agent::create(['model' => 'gpt-4o']);
+$agent->registerCodeInterpreter('cntr_your_container_id');
+$agent->registerRetrieval(['k' => 3]);
+$agent->registerWebSearch();
+$response = $agent->chat('Analyze this data and search for recent information');
+```
+
 ```php
 $runner = Agent::runner();
 $runner->registerTool('calculator', fn($args) => eval("return {$args['expression']};"));

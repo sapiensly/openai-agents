@@ -39,7 +39,7 @@ class AgentOptions
         public string|null $mode = null,
         public string|null $autonomy_level = null,
         public array|null  $capabilities = null,
-        public array|null  $tools = null,
+        public array|null  $tools = null, // Default to an empty array
         public string|null $system_prompt = null,
         public string|null $instructions = null, // Optional instructions for the agent (responses api)
         public int|null    $max_turns = null,
@@ -47,6 +47,7 @@ class AgentOptions
         public int|null    $max_conversation_tokens = null,
     ) {
         // Establecer valores por defecto dentro del constructor
+        $this->tools ??= [];
         $this->model = $this->model ?? config('agents.default.model', 'gpt-4o');
         $this->temperature = $this->temperature ?? config('agents.default.temperature', 0.7);
         $this->top_p = $this->top_p ?? config('agents.default.top_p', 0.9);
@@ -162,7 +163,7 @@ class AgentOptions
             'mode' => $this->mode,
             'autonomy_level' => $this->autonomy_level,
             'capabilities' => $this->capabilities,
-            'tools' => $this->tools,
+            'tools' => (array) $this->tools ?? [],
             'system_prompt' => $this->system_prompt,
             'instructions' => $this->instructions,
             'max_turns' => $this->max_turns,

@@ -9,6 +9,7 @@ use OpenAI\Client;
 use Random\RandomException;
 use Sapiensly\OpenaiAgents\Events\AgentResponseGenerated;
 use Sapiensly\OpenaiAgents\Tools\ToolCacheManager;
+use Sapiensly\OpenaiAgents\Tools\VectorStoreTool;
 
 class Agent
 {
@@ -275,6 +276,17 @@ class Agent
     }
 
     /**
+     * Set individual option Tools
+     *
+     * @param array $value The value to set
+     */
+    public function setTools(array $value): self
+    {
+        $this->options->setTools($value);
+        return $this;
+    }
+
+    /**
      * Set individual option Max Turns
      *
      * @param int $value The value to set
@@ -451,13 +463,22 @@ class Agent
         return $this->totalTokens;
     }
 
-
     /**
      * Add used tokens to the agent's total.
      */
     private function addTokenUsage(int $tokens): void
     {
         $this->totalTokens += $tokens;
+    }
+
+    /**
+     * Get the RAG configuration.
+     *
+     * @return array|null
+     */
+    public function getRAGConfig(): array|null
+    {
+        return $this->ragConfig;
     }
 
 
@@ -502,13 +523,13 @@ class Agent
      *
      * @param string $agentName The name of the pre-configured agent
      * @return Agent The configured agent instance
-     * @throws \Exception If the agent is not configured
+     * @throws Exception If the agent is not configured
      */
     public static function use(string $agentName): self
     {
         $config = config("agents.agents.{$agentName}");
         if (!$config) {
-            throw new \Exception("Agent '{$agentName}' not configured. Please add it to config/agents.php");
+            throw new Exception("Agent '{$agentName}' not configured. Please add it to config/agents.php");
         }
 
         $manager = app(AgentManager::class);
@@ -602,7 +623,7 @@ class Agent
                 $expr = $args['expression'] ?? '0';
                 try {
                     return eval("return {$expr};");
-                } catch (\Exception $e) {
+                } catch (Exception $e) {
                     return "Error calculating expression: {$expr}";
                 }
             },
@@ -669,6 +690,61 @@ class Agent
     }
 
     /**
+     * Search for a vector store by name.
+     *
+     * @param string $name
+     * @return string|null
+     */
+    private function findVectorStoreByName(string $name): ?string
+    {
+        $result = $this->runTool('vector_store', 'list');
+        $data = json_decode($result, true);
+
+        if (!$data['success']) {
+            return null;
+        }
+
+        foreach ($data['vector_stores'] as $vs) {
+            if ($vs['name'] === $name) {
+                return $vs['id'];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Search for a vector store by ID.
+     */
+    private function findVectorStoreById(string $id): ?string
+    {
+        $result = $this->runTool('vector_store', 'list');
+        $data = json_decode($result, true);
+
+        if (!$data['success']) {
+            return null;
+        }
+
+        foreach ($data['vector_stores'] as $vs) {
+            if ($vs['id'] === $id) {
+                return $vs['id'];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Get a VectorStoreTool instance for this agent.
+     *
+     * @return VectorStoreTool
+     */
+    public function getVectorStoreTool(): VectorStoreTool
+    {
+        return new VectorStoreTool($this->client);
+    }
+
+    /**
      * Register official OpenAI tools (code_interpreter, retrieval, web_search)
      *
      * @param string $type Tool type: 'code_interpreter', 'retrieval', 'web_search'
@@ -676,7 +752,7 @@ class Agent
      * @return self
      * @throws \InvalidArgumentException if required config is missing
      */
-    public function registerOpenAITools(string $type, array $config = []): self
+    private function registerOpenAITools(string $type, array $config = []): self
     {
         $tool = match($type) {
             'code_interpreter' => [
@@ -693,6 +769,10 @@ class Agent
                 'type' => 'web_search',
                 // You can add more required fields here if the API requires them
             ],
+            'file_search' => [ //replacement for retrieval in Resposnes API
+                'type' => 'file_search',
+                // You can add more required fields here if the API requires them
+            ],
             default => throw new \InvalidArgumentException("Unknown OpenAI tool type: {$type}")
         };
         $this->openAITools[] = $tool;
@@ -704,128 +784,93 @@ class Agent
         return $this->registerOpenAITools('code_interpreter', ['container' => $containerId]);
     }
 
-    public function registerRetrieval(array $config = []): self
-    {
-        return $this->registerOpenAITools('retrieval', $config);
-    }
-
     public function registerWebSearch(): self
     {
         return $this->registerOpenAITools('web_search');
     }
 
     /**
-     * Enable RAG functionality with vector store.
+     * Set the RAG tools for the agent.
      *
-     * @param string $vectorStoreId The vector store ID
-     * @param array $config Additional configuration
-     * @return self
+     * This method sets the tools required for RAG functionality, including
+     * the vector store and file search tools.
+     *
+     * @return void
+     * @throws Exception
      */
-    public function enableRAG(string $vectorStoreId, array $config = []): self
+    private function registerRAG(): void
     {
-        // Store RAG configuration for use in chat methods
-        $this->ragConfig = array_merge([
-            'vector_store_id' => $vectorStoreId,
-            'k' => 5,
-            'r' => 0.7
-        ], $config);
+        if(!$this->ragConfig) {
+            throw new Exception("RAG configuration is not set. Please call useRAG() first.");
+        }
 
-        Log::info("[Agent] RAG enabled with vector store: {$vectorStoreId}");
+        if (empty($this->ragConfig['vector_store_ids'])) {
+            throw new Exception("Vector store IDs are required to register RAG tools.");
+        }
+
+        // Register the vector store tool
+        $currentTools = $this->options->get('tools') ?? [];
+
+        $this->setTools(array_merge($currentTools, [
+            [
+                'type' => 'file_search',
+                'vector_store_ids' => $this->ragConfig['vector_store_ids'],
+                'max_num_results' => $this->ragConfig['max_num_results'] ?? config('agent.rag.max_num_results', 5),
+            ]
+        ]));
+    }
+
+    /**
+     * Use an existing RAG vector store by ID or name.
+     *
+     * @param array|string $vector_identifiers Vector store identifiers (ID or name) can be a single string or an array of strings.
+     * @param int|null $max_num_results Maximum number of results to return
+     * @return self
+     * @throws Exception
+     */
+    public function useRAG(array|string $vector_identifiers, int|null $max_num_results = null): self
+    {
+        // $vector_identifiers cannot be null or empty string o empty array
+        if (empty($vector_identifiers)) {
+            throw new Exception("Vector identifiers cannot be empty.");
+        }
+
+        // Check if $vector_identifier is string or array
+        if (is_array($vector_identifiers)) {
+            $vector_identifiers_array = $vector_identifiers; // Use the first identifier
+        } else {
+            $vector_identifiers_array = [$vector_identifiers];
+        }
+
+        foreach ($vector_identifiers_array as $vector_identifier) {
+            // If it's an ID, use it directly
+            if (str_starts_with($vector_identifier, 'vs_')) {
+                $vectorStoreId = $this->findVectorStoreById($vector_identifier);
+            }else{
+                // Else probably it's a name, search for it in the list
+                $vectorStoreId = $this->findVectorStoreByName($vector_identifier);
+            }
+            if (!$vectorStoreId) {
+                throw new Exception("Vector store '{$vector_identifier}' not found.");
+            }
+            $vectorStoreIds[] = $vectorStoreId;
+        }
+
+        // if $vectorStoreIds is empty, throw an exception
+        if (empty($vectorStoreIds)) {
+            throw new Exception("No valid vector store IDs found for the provided identifiers.");
+        }
+
+        $max_num_results = $max_num_results ?? config('agent.rag.max_num_results', 5);
+        $this->ragConfig = array_merge((array)$this->ragConfig, [
+            'type' => 'file_search',
+            'vector_store_ids' => $vectorStoreIds,
+            'max_num_results' => $max_num_results,
+        ]);
+
+        $this->registerRAG();
 
         return $this;
-    }
-
-    /**
-     * Setup RAG with vector store and files.
-     *
-     * @param string $name Vector store name
-     * @param array $files Array of file paths to upload
-     * @param array $config Additional configuration
-     * @return self
-     * @throws Exception
-     */
-    public function setupRAG(string $name, array $files = [], array $config = []): self
-    {
-        // Create vector store
-        $vectorStoreResult = $this->runTool('vector_store', 'create', ['name' => $name]);
-        $vectorStoreData = json_decode($vectorStoreResult, true);
-
-        if (!$vectorStoreData['success']) {
-            throw new \Exception("Failed to create vector store: " . ($vectorStoreData['error'] ?? 'Unknown error'));
-        }
-
-        $vectorStoreId = $vectorStoreData['vector_store_id'];
-
-        // Upload files if provided
-        $fileIds = [];
-        foreach ($files as $filePath) {
-            $fileResult = $this->runTool('file_upload', 'upload', ['file_path' => $filePath]);
-            $fileData = json_decode($fileResult, true);
-
-            if ($fileData['success']) {
-                $fileIds[] = $fileData['file_id'];
-            }
-        }
-
-        // Add files to vector store if any
-        if (!empty($fileIds)) {
-            $this->runTool('vector_store', 'add_files', [
-                'vector_store_id' => $vectorStoreId,
-                'file_ids' => $fileIds
-            ]);
-        }
-
-        // Enable RAG with the vector store
-        return $this->enableRAG($vectorStoreId, $config);
-    }
-
-    /**
-     * Use existing RAG vector store by ID or name.
-     *
-     * @param string $identifier Vector store ID (vs_...) o nombre
-     * @param array $config Configuración adicional
-     * @return self
-     * @throws Exception
-     */
-    public function useRAG(string $identifier, array $config = []): self
-    {
-        // If it's an ID, use it directly
-        if (str_starts_with($identifier, 'vs_')) {
-            return $this->enableRAG($identifier, $config);
-        }
-
-        // If it's a name, search for it in the list
-        $vectorStoreId = $this->findVectorStoreByName($identifier);
-
-        if (!$vectorStoreId) {
-            throw new \Exception("Vector store with name '{$identifier}' not found. Use setupRAG() to create it.");
-        }
-
-        return $this->enableRAG($vectorStoreId, $config);
-    }
-
-    /**
-     * Search for a vector store by name.
-     *
-     * @param string $name
-     * @return string|null
-     */
-    private function findVectorStoreByName(string $name): ?string
-    {
-        $result = $this->runTool('vector_store', 'list', ['limit' => 100]);
-        $data = json_decode($result, true);
-
-        if (!$data['success']) {
-            return null;
-        }
-
-        foreach ($data['vector_stores'] as $vs) {
-            if ($vs['name'] === $name) {
-                return $vs['id'];
-            }
-        }
-
-        return null;
     }
 
     /**
@@ -862,129 +907,7 @@ class Agent
 
         $this->messages[] = ['role' => 'user', 'content' => $message];
 
-        // Check if we have RAG configuration
-        if ($this->ragConfig !== null) {
-            return $this->chatWithRetrieval($message, $toolDefinitions, $outputType);
-        }
-
         return $this->chatWithResponsesAPI($message, $toolDefinitions, $outputType);
-    }
-
-    /**
-     * Chat with retrieval tool enabled.
-     *
-     * @param string $message The user message to process
-     * @param array|null $toolDefinitions Array of tool definitions for function calling
-     * @param mixed|null $outputType Optional output type override
-     * @return string The AI's response
-     * @throws Exception
-     */
-    private function chatWithRetrieval(string $message, array $toolDefinitions, mixed $outputType): string
-    {
-        Log::info("[Agent Debug] Chat with chatWithRetrieval: {$message}");
-        if (!empty($toolDefinitions)) {
-            throw new \Exception('No se pueden usar tools de tipo function junto con retrieval en la misma llamada.');
-        }
-        $params = [
-            'model' => $this->options['model'] ?? 'gpt-4o',
-            'messages' => $this->messages,
-            'temperature' => $this->options['temperature'] ?? null,
-            'top_p' => $this->options['top_p'] ?? null,
-            'tools' => [
-                [
-                    'type' => 'retrieval',
-                    'retrieval' => [
-                        'vector_store_id' => $this->ragConfig['vector_store_id'],
-                        'k' => $this->ragConfig['k'],
-                        'r' => $this->ragConfig['r']
-                    ]
-                ]
-            ],
-            'tool_choice' => 'auto',
-        ];
-        $outputType = $outputType ?? $this->outputType;
-        if ($outputType !== null) {
-            $params['response_format'] = ['type' => 'json_object'];
-        }
-        try {
-            $response = $this->client->chat()->create($params);
-            $choice = $response['choices'][0];
-            $message = $choice['message'];
-            $finishReason = $choice['finishReason'] ?? $choice['finish_reason'] ?? 'unknown';
-            $content = $message['content'] ?? '';
-            $toolCalls = $this->extractToolCalls($response, $message, $finishReason);
-            if (!empty($toolCalls)) {
-                $this->messages[] = ['role' => 'assistant', 'content' => $content, 'tool_calls' => $toolCalls];
-                $finalParams = [
-                    'model' => $this->options['model'] ?? 'gpt-4o',
-                    'messages' => $this->messages,
-                    'temperature' => $this->options['temperature'] ?? null,
-                    'top_p' => $this->options['top_p'] ?? null,
-                ];
-                $finalResponse = $this->client->chat()->create($finalParams);
-                $finalChoice = $finalResponse['choices'][0];
-                $finalContent = $finalChoice['message']['content'] ?? '';
-                if (!empty($finalContent)) {
-                    $this->messages[] = ['role' => 'assistant', 'content' => $finalContent];
-                }
-                return $finalContent;
-            }
-            if (!empty($content)) {
-                $this->messages[] = ['role' => 'assistant', 'content' => $content];
-            }
-            return $content;
-        } catch (\Exception $e) {
-            // Fallback: if the error is from tools[0].function, do traditional RAG
-            if (strpos($e->getMessage(), "tools[0].function") !== false || strpos($e->getMessage(), "Missing required parameter") !== false) {
-                // 1. Search for relevant documents in the vector store
-                $results = $this->runTool('vector_store', 'search', [
-                    'vector_store_id' => $this->ragConfig['vector_store_id'],
-                    'query' => $message,
-                    'k' => $this->ragConfig['k'],
-                    'r' => $this->ragConfig['r']
-                ]);
-                $data = json_decode($results, true);
-                $context = '';
-                if (isset($data['success']) && $data['success'] && isset($data['results'])) {
-                    foreach ($data['results'] as $i => $doc) {
-                        $text = $doc['text'] ?? '';
-                        // If it's an array of objects with 'text', concatenate the texts
-                        if (is_array($text)) {
-                            // If it's an array of objects with 'text'
-                            if (isset($text[0]['text'])) {
-                                $text = implode("\n\n", array_map(fn($t) => $t['text'] ?? '', $text));
-                            } else {
-                                $text = implode("\n", $text);
-                            }
-                        }
-                        $context .= "[Doc #" . ($i+1) . "]\n" . $text . "\n";
-                    }
-                }
-                // 2. Add the context to the messages
-                $contextMsg = "CONTEXT:\n" . $context . "\n---\n";
-                $this->messages[] = ['role' => 'system', 'content' => $contextMsg];
-                $this->messages[] = ['role' => 'user', 'content' => $message];
-                // 3. Call the model without tools
-                $params = [
-                    'model' => $this->options['model'] ?? 'gpt-4o',
-                    'messages' => $this->messages,
-                    'temperature' => $this->options['temperature'] ?? null,
-                    'top_p' => $this->options['top_p'] ?? null,
-                ];
-                if ($outputType !== null) {
-                    $params['response_format'] = ['type' => 'json_object'];
-                }
-                $response = $this->client->chat()->create($params);
-                $choice = $response['choices'][0];
-                $content = $choice['message']['content'] ?? '';
-                if (!empty($content)) {
-                    $this->messages[] = ['role' => 'assistant', 'content' => $content];
-                }
-                return $content;
-            }
-            Log::error("[Agent Debug] Chat with retrieval error: {$e->getMessage()}");
-            throw $e;
-        }
     }
 
     /**
@@ -1046,6 +969,7 @@ class Agent
             'input' => $inputItems,
             'temperature' => $this->options->get('temperature') ?? null,
             'top_p' => $this->options->get('top_p') ?? null,
+            'tools' => $this->options->get('tools') ?? []
             //'modalities' => ['text', 'audio'], // request both formats (optional)
         ];
 
@@ -1111,6 +1035,10 @@ class Agent
             $outputTokenCount = 0;
             if ($response->output) {
                 foreach ($response->output as $output) {
+                    // Check if the output has content
+                    if (!isset($output->content) || !is_array($output->content)) {
+                        continue; // Skip if no content
+                    }
                     foreach ($output->content as $content) {
                         if (isset($content->type) && $content->type === 'output_text') {
                             $response_content .=  $content->text ?? '';
@@ -1312,7 +1240,7 @@ class Agent
         Log::info("[Agent Debug] Chat with chatStreamedWithRetrieval: {$message}");
 
         if (!empty($toolDefinitions)) {
-            throw new \Exception('No se pueden usar tools de tipo function junto con retrieval en la misma llamada.');
+            throw new Exception('No se pueden usar tools de tipo function junto con retrieval en la misma llamada.');
         }
 
         // Intentar usar el tool de retrieval oficial de OpenAI con streaming
@@ -1432,7 +1360,7 @@ class Agent
                 $this->messages[] = ['role' => 'assistant', 'content' => $fullContent];
             }
 
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             // Fallback a RAG tradicional en streaming
             if (strpos($e->getMessage(), "tools[0].function") !== false || strpos($e->getMessage(), "Missing required parameter") !== false) {
                 $results = $this->runTool('vector_store', 'search', [
@@ -1695,7 +1623,7 @@ class Agent
     public function execute(string $task, array $context = []): mixed
     {
         if (!$this->isAutonomous()) {
-            throw new \Exception('Agent is not in autonomous mode.');
+            throw new Exception('Agent is not in autonomous mode.');
         }
 
         // Decision logic based on autonomy level
@@ -1931,7 +1859,7 @@ class Agent
                         }
 
                         return $result;
-                    } catch (\Exception $e) {
+                    } catch (Exception $e) {
                         Log::error("[Agent Debug] Error executing tool: {$e->getMessage()}");
                         return "Error executing {$functionName}: {$e->getMessage()}";
                     }
