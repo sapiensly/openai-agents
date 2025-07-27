@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Sapiensly\OpenaiAgents;
 
+use Exception;
 use Fiber;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Log;
@@ -128,10 +129,10 @@ class Runner
 
         // Initialize tool cache manager
         $this->toolCacheManager = new ToolCacheManager(Config::get('agents.tools.cache.enabled', true));
-        
+
         // Initialize response cache manager
         $this->responseCacheManager = new ResponseCacheManager(Config::get('agents.response_cache.enabled', true));
-        
+
         // Pass cache manager to agent
         if ($this->toolCacheManager) {
             // Create new agent with cache manager
@@ -142,10 +143,10 @@ class Runner
                 $this->agent->getId(),
                 $this->toolCacheManager
             );
-            
+
             // Copy messages from old agent
             $newAgent->setMessages($this->agent->getMessages());
-            
+
             $this->agent = $newAgent;
         }
     }
@@ -224,7 +225,7 @@ class Runner
         }
 
         $this->mcpManager->addTool($tool);
-        
+
         // Also register as a regular tool for the agent
         $this->registerFunctionTool($tool->getName(), function ($params) use ($tool) {
             return $tool->execute($params);
@@ -279,7 +280,7 @@ class Runner
     public function executeMCPTool(string $toolName, array $parameters = [])
     {
         if (!$this->mcpManager) {
-            throw new \Exception('MCP manager not initialized');
+            throw new Exception('MCP manager not initialized');
         }
 
         return $this->mcpManager->executeTool($toolName, $parameters);
@@ -324,7 +325,7 @@ class Runner
     public function streamMCPResource(string $serverName, string $resourceName, array $parameters = []): iterable
     {
         if (!$this->mcpManager) {
-            throw new \Exception('MCP Manager not initialized');
+            throw new Exception('MCP Manager not initialized');
         }
 
         return $this->mcpManager->streamResource($serverName, $resourceName, $parameters);
@@ -341,7 +342,7 @@ class Runner
     public function subscribeToMCPEvents(string $serverName, string $eventType, array $filters = []): iterable
     {
         if (!$this->mcpManager) {
-            throw new \Exception('MCP Manager not initialized');
+            throw new Exception('MCP Manager not initialized');
         }
 
         return $this->mcpManager->subscribeToEvents($serverName, $eventType, $filters);
@@ -352,14 +353,16 @@ class Runner
      *
      * @param string $serverName The server name
      * @param string $resourceName The resource name
-     * @param array $parameters The resource parameters
-     * @param callable $callback Callback function for each chunk
+     * @param array|null $parameters The resource parameters
+     * @param callable|null $callback Callback function for each chunk
      * @return void
+     * @throws Exception
      */
-    public function streamMCPResourceWithCallback(string $serverName, string $resourceName, array $parameters = [], callable $callback = null): void
+    public function streamMCPResourceWithCallback(string $serverName, string $resourceName, array|null $parameters = null, callable|null $callback = null): void
     {
+        $parameters ??= [];
         if (!$this->mcpManager) {
-            throw new \Exception('MCP Manager not initialized');
+            throw new Exception('MCP Manager not initialized');
         }
 
         $this->mcpManager->streamResourceWithCallback($serverName, $resourceName, $parameters, $callback);
@@ -596,7 +599,7 @@ class Runner
     public function run(string $message): string|array
     {
         $spanId = $this->tracer?->startSpan('runner', ['max_turns' => $this->maxTurns]);
-        
+
         // Check response cache first
         if ($this->responseCacheManager && !$this->responseCacheManager->shouldBypassCache($message)) {
             $context = [
@@ -605,7 +608,7 @@ class Runner
                 'max_turns' => $this->maxTurns,
                 'conversation_id' => $this->conversationId
             ];
-            
+
             $cachedResponse = $this->responseCacheManager->getCachedResponse($message, $context);
             if ($cachedResponse !== null) {
                 Log::info("[Runner Debug] Using cached response for input: {$message}");
@@ -613,7 +616,7 @@ class Runner
                 return $cachedResponse;
             }
         }
-        
+
         $turn = 0;
         $input = $message;
         $response = '';
@@ -631,13 +634,13 @@ class Runner
             }
 
             $toolDefs = array_values(array_filter($this->tools, fn($t) => !empty($t['schema'])));
-            
+
             // Add MCP tools if available
             if ($this->mcpManager) {
                 $mcpTools = $this->getMCPTools();
                 $toolDefs = array_merge($toolDefs, $mcpTools);
             }
-            
+
             // Use agent loop if tool usage is forced
             if ($this->forceToolUsage && !empty($toolDefs)) {
                 $response = $this->runAgentLoop($input, $toolDefs);
@@ -689,12 +692,12 @@ class Runner
                     } else {
                         // Execute tool and cache result
                         $input = ($tool['callback'])($args);
-                        
+
                         if ($this->toolCacheManager && !$this->toolCacheManager->shouldBypassCache($name, $args)) {
                             $this->toolCacheManager->cacheResult($name, $args, $input);
                         }
                     }
-                    
+
                     $turn++;
                     continue;
                 }
@@ -773,7 +776,7 @@ class Runner
         }
         $this->tracer?->endSpan($spanId);
         $this->turnCount = $turn;
-        
+
         // Cache the final response
         if ($this->responseCacheManager && !$this->responseCacheManager->shouldBypassCache($message)) {
             $context = [
@@ -782,14 +785,14 @@ class Runner
                 'max_turns' => $this->maxTurns,
                 'conversation_id' => $this->conversationId
             ];
-            
-            $finalResponse = $this->outputType !== null && $this->outputMatches($response) 
-                ? json_decode($response, true) 
+
+            $finalResponse = $this->outputType !== null && $this->outputMatches($response)
+                ? json_decode($response, true)
                 : $response;
-                
+
             $this->responseCacheManager->cacheResponse($message, $context, (string) $finalResponse);
         }
-        
+
         if ($this->outputType !== null && $this->outputMatches($response)) {
             return json_decode($response, true);
         }
@@ -963,16 +966,16 @@ class Runner
     {
         $retries = 0;
         $input = $message;
-        
+
         while ($retries < $this->maxToolRetries) {
             $response = $this->agent->chat($input, $toolDefinitions, $this->outputType);
-            
+
             // Check if response contains tool calls
             if (preg_match('/\[\[tool:(\w+)(?:\s+([^]]+))?]]/', $response, $m)) {
                 // Tool call detected, process it normally
                 $name = $m[1];
                 $arg = $m[2] ?? '';
-                
+
                 if (isset($this->tools[$name])) {
                     $tool = $this->tools[$name];
                     $args = $arg;
@@ -988,7 +991,7 @@ class Runner
                         if (!empty($errors)) {
                             $errorMessage = "Argument validation error: " . implode('; ', $errors);
                             Log::info("[Agent Loop] Validation failed: {$errorMessage}");
-                            
+
                             // Ask the model to retry with corrected arguments
                             $input = "The function call failed with validation errors: {$errorMessage}. Please retry with valid arguments.";
                             $retries++;
@@ -1008,17 +1011,17 @@ class Runner
                     } else {
                         // Execute tool and cache result
                         $input = ($tool['callback'])($args);
-                        
+
                         if ($this->toolCacheManager && !$this->toolCacheManager->shouldBypassCache($name, $args)) {
                             $this->toolCacheManager->cacheResult($name, $args, $input);
                         }
                     }
-                    
+
                     $retries++;
                     continue;
                 }
             }
-            
+
             // No tool call detected
             if ($this->forceToolUsage && !empty($toolDefinitions)) {
                 Log::info("[Agent Loop] No tool call detected, forcing retry. Attempt: " . ($retries + 1));
@@ -1026,16 +1029,45 @@ class Runner
                 $retries++;
                 continue;
             }
-            
+
             // Valid response (either no tools required or tool call successful)
             return $response;
         }
-        
+
         // Max retries reached
         if ($this->forceToolUsage) {
             return "Error: Maximum retries reached. The agent failed to use the required tools properly.";
         }
-        
+
         return $response;
     }
+
+    public function getCurrentAgent(): array|null
+    {
+        return [
+            'id' => $this->agent->getId(),
+            'name' => $this->findCurrentAgentName(),
+            'model' => $this->agent->getOption('model'),
+            'tools' => $this->agent->getOption('tools'),
+        ];
+    }
+
+    /**
+     * Find the name of the current agent by searching through named agents.
+     *
+     * @return string|null The agent name or null if not found
+     */
+    private function findCurrentAgentName(): ?string
+    {
+        $currentAgentId = $this->agent->getId();
+
+        foreach ($this->getNamedAgents() as $name => $agent) {
+            if ($agent->getId() === $currentAgentId) {
+                return $name;
+            }
+        }
+
+        return null;
+    }
+
 }

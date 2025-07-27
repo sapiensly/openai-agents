@@ -142,7 +142,7 @@ class HandoffOrchestrator
         $this->metrics = $metrics;
         $this->config = $config;
         $this->tracing = $tracing ?? new TracingManager();
-        
+
         // Initialize validator, fallback strategy, and context analyzer
         $this->validator = new HandoffValidator($registry, $security, $stateManager, $config);
         $this->fallbackStrategy = new FallbackStrategy($registry, $stateManager, $security, $metrics, $config);
@@ -261,7 +261,7 @@ class HandoffOrchestrator
         } catch (\Throwable $e) {
             $this->metrics->recordHandoffFailure($request, $e);
             $this->tracing->endSpan(['success' => false, 'error' => $e->getMessage()]);
-            
+
             $handoffId = uniqid('handoff_', true);
             return new HandoffResult(
                 $handoffId,
@@ -314,27 +314,27 @@ class HandoffOrchestrator
      * @return HandoffResult|null The handoff result, or null if no handoff needed
      */
     public function handleIntelligentHandoff(
-        string $userInput, 
-        string $currentAgentId, 
-        string $conversationId, 
-        array $context = [], 
+        string $userInput,
+        string $currentAgentId,
+        string $conversationId,
+        array $context = [],
         float $confidenceThreshold = 0.7
     ): ?HandoffResult {
         // Get suggestion from context analyzer
         $suggestion = $this->suggestHandoff($userInput, $currentAgentId, $conversationId, $context);
-        
+
         if (!$suggestion) {
             return null;
         }
-        
+
         // Check if confidence meets threshold
         if ($suggestion->confidence < $confidenceThreshold) {
             return null;
         }
-        
+
         // Convert suggestion to handoff request
         $request = $suggestion->toHandoffRequest($currentAgentId, $conversationId, $context);
-        
+
         // Handle the handoff
         return $this->handleHandoff($request);
     }
@@ -351,10 +351,10 @@ class HandoffOrchestrator
      * @return HandoffResult|null The handoff result, or null if no handoff needed
      */
     public function handleHybridHandoff(
-        string $userInput, 
-        string $currentAgentId, 
-        string $conversationId, 
-        array $context = [], 
+        string $userInput,
+        string $currentAgentId,
+        string $conversationId,
+        array $context = [],
         float $confidenceThreshold = 0.7
     ): ?HandoffResult {
         // Step 1: Try intelligent handoff first
@@ -364,7 +364,7 @@ class HandoffOrchestrator
                 return $intelligentResult;
             }
         }
-        
+
         // Step 2: If intelligent handoff didn't work, let the agent decide manually
         // This will be handled by the agent's response parsing
         return null;
@@ -597,10 +597,10 @@ class HandoffOrchestrator
     /**
      * Get all active async handoff jobs.
      *
-     * @param string $conversationId The conversation ID (optional)
+     * @param string|null $conversationId The conversation ID (optional)
      * @return array Array of active jobs
      */
-    public function getActiveAsyncHandoffs(string $conversationId = null): array
+    public function getActiveAsyncHandoffs(string|null $conversationId = null): array
     {
         return $this->asyncHandoffManager->getActiveAsyncHandoffs($conversationId);
     }

@@ -5,14 +5,19 @@ namespace Sapiensly\OpenaiAgents;
 
 use Exception;
 use Illuminate\Support\Facades\Log;
+use InvalidArgumentException;
 use OpenAI\Client;
 use Random\RandomException;
+use ReflectionException;
 use Sapiensly\OpenaiAgents\Events\AgentResponseGenerated;
 use Sapiensly\OpenaiAgents\Tools\ToolCacheManager;
 use Sapiensly\OpenaiAgents\Tools\VectorStoreTool;
+use Sapiensly\OpenaiAgents\Traits\FunctionSchemaGenerator;
 
 class Agent
 {
+    use FunctionSchemaGenerator;
+
     /**
      * The OpenAI client instance.
      *
@@ -91,9 +96,21 @@ class Agent
     protected array|null $ragConfig = null;
 
     /**
+     * Store function implementations for execution
+     */
+    protected array $functionImplementations = [];
+
+    /**
+     * Web search tool configuration.
+     */
+    protected bool $useWebSearch = false;
+
+
+    /**
      * Total tokens used by the agent.
      */
     protected int $totalTokens = 0;
+
 
     /**
      * Create a new Agent instance.
@@ -483,6 +500,7 @@ class Agent
 
 
 
+
     // ========================================
     // PROGRESSIVE ENHANCEMENT - LEVEL 0 METHODS
     // ========================================
@@ -736,6 +754,8 @@ class Agent
 
     /**
      * Get a VectorStoreTool instance for this agent.
+     * This method creates a new VectorStoreTool instance using the agent's OpenAI client account.
+     * The VectorStoreTool can be used to interact with vector stores for RAG (Retrieval-Augmented Generation) tasks.
      *
      * @return VectorStoreTool
      */
@@ -750,7 +770,7 @@ class Agent
      * @param string $type Tool type: 'code_interpreter', 'retrieval', 'web_search'
      * @param array $config Tool-specific configuration. For 'code_interpreter', must include 'container' => 'cntr_...'.
      * @return self
-     * @throws \InvalidArgumentException if required config is missing
+     * @throws InvalidArgumentException if required config is missing
      */
     private function registerOpenAITools(string $type, array $config = []): self
     {
@@ -759,7 +779,7 @@ class Agent
                 'type' => 'code_interpreter',
                 'container' => isset($config['container']) && str_starts_with($config['container'], 'cntr')
                     ? $config['container']
-                    : throw new \InvalidArgumentException("You must provide a valid 'container' ID (starting with 'cntr') for code_interpreter. Example: ['container' => 'cntr_xxx...']"),
+                    : throw new InvalidArgumentException("You must provide a valid 'container' ID (starting with 'cntr') for code_interpreter. Example: ['container' => 'cntr_xxx...']"),
             ],
             'retrieval' => [
                 'type' => 'retrieval',
@@ -773,7 +793,7 @@ class Agent
                 'type' => 'file_search',
                 // You can add more required fields here if the API requires them
             ],
-            default => throw new \InvalidArgumentException("Unknown OpenAI tool type: {$type}")
+            default => throw new InvalidArgumentException("Unknown OpenAI tool type: {$type}")
         };
         $this->openAITools[] = $tool;
         return $this;
@@ -784,10 +804,6 @@ class Agent
         return $this->registerOpenAITools('code_interpreter', ['container' => $containerId]);
     }
 
-    public function registerWebSearch(): self
-    {
-        return $this->registerOpenAITools('web_search');
-    }
 
     /**
      * Set the RAG tools for the agent.
@@ -818,6 +834,82 @@ class Agent
                 'max_num_results' => $this->ragConfig['max_num_results'] ?? config('agent.rag.max_num_results', 5),
             ]
         ]));
+    }
+
+    /**
+     * Registers and processes function schemas by validating and appending them
+     * to the current tools configuration.
+     *
+     * This method generates function schemas, validates them, and integrates
+     * valid schemas into the current tools configuration, if applicable.
+     *
+     * @param string|object|array|callable $functionSchema The input schema or configuration for the functions.
+     * @throws ReflectionException
+     */
+    private function registerFunctionCalling(string|object|array|callable $functionSchema): void
+    {
+        if (empty($functionSchema)) {
+            return;
+        }
+        $schemas = $this->generateFunctionSchema($functionSchema);
+        if (empty($schemas)) {
+            return;
+        }
+
+        $currentTools = $this->options->get('tools') ?? [];
+
+        foreach ($schemas as $schema) {
+            if ($this->isValidFunctionSchema($schema)) {
+                $currentTools[] = $schema;
+                // Register the function implementation if available
+                if (isset($this->functionImplementations[$schema['name']])) {
+                    $implementation = $this->functionImplementations[$schema['name']];
+                    if (is_callable($implementation)) {
+                        //$this->options->setFunctionImplementation($schema['name'], $implementation);
+                    } else {
+                        Log::warning("Function implementation for '{$schema['name']}' is not callable.");
+                    }
+                }
+            }
+        }
+
+        $this->setTools($currentTools);
+
+    }
+
+    /**
+     * Register Web Search Tool
+     * This method registers or updates the configuration for the 'web_search_preview' tool.
+     * It checks for the existence of an already configured tool, updates it if found,
+     * or adds a new configuration if not. The modified tools are then saved.
+     *
+     * @param array $webSearchConfig Configuration details for the web search tool.
+     * @return void
+     */
+    private function registerWebSearch(array $webSearchConfig): void
+    {
+
+        $currentTools = $this->options->get('tools') ?? [];
+
+        $webSearchToolIndex = array_search('web_search_preview', array_column($currentTools, 'type'));
+
+        if ($webSearchToolIndex !== false) {
+            // Update existing tool configuration
+            $currentTools[$webSearchToolIndex] = array_merge(
+                ['type' => 'web_search_preview'],
+                $webSearchConfig
+            );
+        } else {
+            $currentTools[] = array_merge(
+                ['type' => 'web_search_preview'],
+                $webSearchConfig
+            );
+        }
+
+        $this->setTools($currentTools);
+
+        $this->useWebSearch = true;
+
     }
 
     /**
@@ -874,6 +966,197 @@ class Agent
     }
 
     /**
+     * Register and use functions for OpenAI interactions.
+     * This method manages the registration of function schemas and their implementations.
+     * It ensures the proper setup of the given functions to be utilized with OpenAI's API.
+     *
+     * @param string|object|array|callable $functions Functions to be registered and used.
+     * @return self
+     * @throws Exception
+     */
+    public function useFunctions(string|object|array|callable $functions): self
+    {
+        // First, register the function schemas
+        $schemas = $this->generateFunctionSchema($functions);
+
+        // Register schemas with OpenAI
+        $this->registerFunctionCalling($schemas);
+
+        // Handle implementation registration based on input type
+        $this->registerImplementations($functions, $schemas);
+
+
+        return $this;
+    }
+
+    /**
+     * Configure and use web search.
+     * This method sets up the web search configuration based on the provided context size
+     * and location details. It validates the search context size and constructs the search
+     * parameters accordingly.
+     *
+     * @param string|null $search_context_size The desired level of search context: 'high', 'medium', or 'low'. Defaults to 'medium'.
+     * @param string|null $country The user's country for location-specific search, if provided.
+     * @param string|null $city The user's city for location-specific search, if provided.
+     * @return self
+     * @throws InvalidArgumentException If an invalid search_context_size is provided.
+     */
+    public function useWebSearch(string|null $search_context_size = null, string|null $country = null, string|null $city = null): self
+    {
+        $validContextSizes = ['high', 'medium', 'low'];
+        $contextSize = $search_context_size ?? 'medium';
+
+        if (!in_array($contextSize, $validContextSizes, true)) {
+            throw new InvalidArgumentException(
+                "Invalid search_context_size: '{$contextSize}'. Valid options: " . implode(', ', $validContextSizes)
+            );
+        }
+
+        // Build a configuration array
+        $webSearchConfig = [];
+
+        // Only add context size if it's not the default 'medium'
+        if ($contextSize !== 'medium') {
+            $webSearchConfig['search_context_size'] = $contextSize;
+        }
+
+        // Add location configuration if provided
+        if ($country !== null || $city !== null) {
+            $webSearchConfig['user_location']['type'] = "approximate";
+            if ($country !== null) { $webSearchConfig['user_location']['country'] = $country; }
+            if ($city !== null) { $webSearchConfig['user_location']['city'] = $city; }
+        }
+
+        $this->registerWebSearch($webSearchConfig);
+
+        return $this;
+    }
+
+
+    /**
+     * Register function implementations based on input type
+     */
+    private function registerImplementations(string|object|array|callable $input, array $schemas): void
+    {
+        if (is_string($input) && class_exists($input)) {
+            // Class string - instantiate and register methods
+            $instance = new $input();
+            $this->registerClassImplementations($instance, $schemas);
+
+        } elseif (is_object($input)) {
+            // Object instance - register methods
+            $this->registerClassImplementations($input, $schemas);
+
+        } elseif (is_array($input)) {
+            // Array can be either schemas or mixed functions
+            $this->registerArrayImplementations($input);
+
+        } elseif (is_callable($input)) {
+            // Single callable
+            $this->registerCallableImplementation($input, $schemas);
+        }
+    }
+
+    /**
+     * Call method with argument mapping
+     * @throws ReflectionException
+     */
+    private function callMethodWithArgs(object $instance, string $methodName, array $args): mixed
+    {
+        $method = new \ReflectionMethod($instance, $methodName);
+        $parameters = $method->getParameters();
+        $orderedArgs = [];
+
+        foreach ($parameters as $param) {
+            $paramName = $param->getName();
+
+            if (isset($args[$paramName])) {
+                $orderedArgs[] = $args[$paramName];
+            } elseif ($param->isDefaultValueAvailable()) {
+                $orderedArgs[] = $param->getDefaultValue();
+            } elseif ($param->allowsNull()) {
+                $orderedArgs[] = null;
+            } else {
+                throw new InvalidArgumentException("Missing required parameter: {$paramName}");
+            }
+        }
+
+        return $method->invokeArgs($instance, $orderedArgs);
+    }
+
+    /**
+     * Register implementations from class instance
+     */
+    private function registerClassImplementations(object $instance, array $schemas): void
+    {
+        foreach ($schemas as $schema) {
+            $functionName = $schema['name'];
+            $camelCaseMethodName = $this->snakeToCamel($functionName);
+
+            // Check for both camelCase and snake_case method names
+            if (method_exists($instance, $camelCaseMethodName)) {
+                $this->functionImplementations[$functionName] = function($args) use ($instance, $camelCaseMethodName) {
+                    return $this->callMethodWithArgs($instance, $camelCaseMethodName, $args);
+                };
+            } elseif (method_exists($instance, $functionName)) {
+                // Support for methods that are already in snake_case (like in WeatherService)
+                $this->functionImplementations[$functionName] = function($args) use ($instance, $functionName) {
+                    return $this->callMethodWithArgs($instance, $functionName, $args);
+                };
+            }
+        }
+    }
+
+    /**
+     * Get callable name for registration
+     */
+    private function getCallableName(callable $function): string
+    {
+        if (is_string($function)) {
+            return $this->camelToSnake($function);
+        }
+
+        if (is_array($function)) {
+            $className = is_object($function[0]) ? get_class($function[0]) : $function[0];
+            return $this->camelToSnake($className . '_' . $function[1]);
+        }
+
+        return 'anonymous_function_' . uniqid();
+    }
+
+    /**
+     * Register implementations from array input
+     */
+    private function registerArrayImplementations(array $input): void
+    {
+        foreach ($input as $item) {
+            if (is_callable($item)) {
+                // Simple callable in array
+                $name = $this->getCallableName($item);
+                $this->functionImplementations[$name] = $item;
+
+            } elseif (is_array($item) && isset($item['name'], $item['implementation'])) {
+                // Structured function definition
+                $this->functionImplementations[$item['name']] = $item['implementation'];
+            }
+        }
+    }
+
+    /**
+     * Register implementation from single callable
+     */
+    private function registerCallableImplementation(callable $callable, array $schemas): void
+    {
+        if (!empty($schemas)) {
+            $functionName = $schemas[0]['name'];
+            $this->functionImplementations[$functionName] = $callable;
+        }
+    }
+
+
+
+
+    /**
      * Run a tool with the given arguments.
      *
      * @param string $toolName The tool name
@@ -912,9 +1195,18 @@ class Agent
 
     /**
      * Chat using the Responses API
+     * This method handles the chat interaction with the OpenAI Responses API.
+     * It prepares the conversation history, manages token limits,
+     * and constructs the API request to get a response.
+     *
+     *
+     * @param string|null $message
+     * @param array $toolDefinitions
+     * @param mixed|null $outputType
+     * @return string
      * @throws Exception
      */
-    private function chatWithResponsesAPI(string $message, array $toolDefinitions, mixed $outputType): string
+    private function chatWithResponsesAPI(string|null $message = null, array $toolDefinitions = [], mixed $outputType = null): string
     {
         //Log::info("[Agent Debug] Chat with chatWithResponsesAPI message: {$message}");
         $startTime = microtime(true);
@@ -936,15 +1228,18 @@ class Agent
         }
 
         // New user message
-        $current = ['content' => $message];
-        // TODO: Add support for images and audio URLs
-        if (!empty($imageUrl)) $current['image_url'] = $imageUrl;
-        if (!empty($audioUrl)) $current['audio_url'] = $audioUrl;
+        if( !empty($message)) {
+            $current = ['content' => $message];
+            // TODO: Add support for images and audio URLs
+            if (!empty($imageUrl)) $current['image_url'] = $imageUrl;
+            if (!empty($audioUrl)) $current['audio_url'] = $audioUrl;
 
-        $inputItems[] = [
-            'role' => 'user',
-            'content' =>  $this->buildContentBlocks(['role' => 'user'] + $current),
-        ];
+            $inputItems[] = [
+                'role' => 'user',
+                'content' =>  $this->buildContentBlocks(['role' => 'user'] + $current),
+            ];
+        }
+
 
         // Set conversation token limit
         $inputTokenCount = 0;
@@ -973,68 +1268,53 @@ class Agent
             //'modalities' => ['text', 'audio'], // request both formats (optional)
         ];
 
-        // Add OpenAI official tools
-        if (!empty($this->openAITools)) {
-            $params['tools'] = $this->openAITools;
-        }
-
-        // Add function tools if any
-        if (!empty($toolDefinitions)) {
-            $functionTools = [];
-            foreach ($toolDefinitions as $tool) {
-                if (isset($tool['type']) && $tool['type'] === 'function' && isset($tool['function'])) {
-                    $functionTools[] = $tool;
-                } else {
-                    $parameters = ['type' => 'object', 'properties' => new \stdClass(), 'required' => []];
-                    if (isset($tool['schema'])) {
-                        if (isset($tool['schema']['schema'])) {
-                            $parameters = $tool['schema']['schema'];
-                        } elseif (isset($tool['schema']['type'])) {
-                            $parameters = $tool['schema'];
-                        }
-                    }
-                    if (isset($parameters['properties']) && is_array($parameters['properties']) && empty($parameters['properties'])) {
-                        $parameters['properties'] = new \stdClass();
-                    }
-                    $functionTool = [
-                        'type' => 'function',
-                        'function' => [
-                            'name' => $tool['name'] ?? 'unknown_function',
-                            'parameters' => $parameters,
-                        ]
-                    ];
-                    if (isset($tool['description'])) {
-                        $functionTool['function']['description'] = $tool['description'];
-                    } elseif (isset($tool['schema']['description'])) {
-                        $functionTool['function']['description'] = $tool['schema']['description'];
-                    }
-                    $functionTools[] = $functionTool;
-                }
-            }
-
-            if (!empty($functionTools)) {
-                $params['tools'] = array_merge($params['tools'] ?? [], $functionTools);
-            }
-        }
-
         // Handle output type for structured responses
         $outputType = $outputType ?? $this->outputType;
         if ($outputType !== null) {
             $params['response_format'] = ['type' => 'json_object'];
         }
 
-
         try {
             $response = $this->client->responses()->create($params);
             $endTime = microtime(true);
+            //dump("[Agent Debug] Responses API response: " . json_encode($response, JSON_PRETTY_PRINT));
 
             // Extract content from Responses API response
             $response_content = '';
             $role = $response->output[0]->role ?? 'assistant';
 
-            $outputTokenCount = 0;
+            // Check if the response has outputs and process them
             if ($response->output) {
                 foreach ($response->output as $output) {
+                    // Check if the output is function_call
+                    if (isset($output->type) && $output->type === 'function_call') {
+                        //dump("[Agent Debug] Function call detected: " . json_encode($output, JSON_PRETTY_PRINT));
+                        // Process function call output
+                        $functionName = $output->name ?? 'unknown_function';
+                        $arguments = $output->arguments ? json_decode($output->arguments, true) : [];
+                        //dump("[Agent Debug] Function call arguments: " . json_encode($arguments, JSON_PRETTY_PRINT));
+                        // Execute the function call
+                        $toolResult = $this->executeFunction($functionName, $arguments);
+                        //dump( "[Agent Debug] Function Tool Result:". json_encode($toolResult, JSON_PRETTY_PRINT));
+                        // Add the tool result to messages
+                        $this->messages[] = [
+                            'role' => 'developer',
+                            'tool_call_id' => $output->id,
+                            'name' => $functionName,
+                            'arguments' => $output->arguments,
+                            'content' => 'Tool call executed: ' . $functionName. ' with arguments: ' . json_encode($arguments, JSON_PRETTY_PRINT) .
+                                ' and result: ' . json_encode($toolResult, JSON_PRETTY_PRINT)
+                        ];
+
+                        // Run the response again to get the final answer
+                        $finalResponse = $this->chatWithResponsesAPI();
+                        //dump("[Agent Debug] Final response after function call: " . $finalResponse);
+                        $response_content .= $finalResponse;
+
+
+                        continue; // Skip to next output
+                    }
+
                     // Check if the output has content
                     if (!isset($output->content) || !is_array($output->content)) {
                         continue; // Skip if no content
@@ -1042,13 +1322,20 @@ class Agent
                     foreach ($output->content as $content) {
                         if (isset($content->type) && $content->type === 'output_text') {
                             $response_content .=  $content->text ?? '';
-                            $outputTokenCount += (int) (strlen($content->text) / 4); // Estimate of token count
                         }
                     }
                 }
             }
 
-            $this->addTokenUsage($inputTokenCount + $outputTokenCount);
+            // Calculate token usage
+            if(isset($response->usage)) {
+                $totalTokenCount = $response->usage->outputTokens ?? 0;
+            } else {
+                $totalTokenCount = 0;
+                Log::warning("[Agent Debug] Responses API response does not contain usage data.");
+            }
+
+            $this->addTokenUsage($totalTokenCount);
 
             if (!empty($response_content)) {
                 $this->messages[] = ['role' => $role, 'content' => $response_content];
@@ -1060,7 +1347,7 @@ class Agent
             return $response_content;
 
         } catch (Exception $e) {
-            Log::error("[Agent Debug] Chat With Responses API error: {$e->getMessage()}");
+            //Log::error("[Agent Debug] Chat With Responses API error: {$e->getMessage()}");
 
             // EMIT ERROR EVENT
             $this->fireErrorEvent($message, $e);
@@ -1932,6 +2219,20 @@ class Agent
 
 
     /**
+     * Execute registered function
+     * @throws Exception
+     */
+    public function executeFunction(string $functionName, array $args = [])
+    {
+        if (!isset($this->functionImplementations[$functionName])) {
+            throw new \Exception("Function {$functionName} not implemented");
+        }
+
+        return call_user_func($this->functionImplementations[$functionName], $args);
+    }
+
+
+    /**
      * Build content blocks based on the message structure.
      *
      * This method parses the input message to construct an array of content blocks.
@@ -1978,17 +2279,17 @@ class Agent
     /**
      * Handles the firing of a response event after processing an API response.
      *
-     * @param string $message The input message for which a response was generated.
+     * @param string|null $message The input message for which a response was generated.
      * @param string $response The generated response from the system.
      * @param float $startTime The timestamp indicating when the response generation started.
      * @param float $endTime The timestamp indicating when the response generation ended.
      * @param mixed $apiResponse A response object or structure received from the API.
-     * @param int $totalUsedTokens The estimated total number of tokens used in the conversation.
+     * @param int $totalTokenUsage
      * @param string|null $api_method The specific method or endpoint alias used during the API interaction, if available.
      *
      * @return void
      */
-    private function fireResponseEvent(string $message, string $response, float $startTime, float $endTime, $apiResponse, int $totalTokenUsage, string|null $api_method = null ): void
+    private function fireResponseEvent(string|null $message, string $response, float $startTime, float $endTime, $apiResponse, int $totalTokenUsage, string|null $api_method = null ): void
     {
         $metadata = [
             'model' => $this->options->get('model') ?? 'gpt-4o',
@@ -2014,10 +2315,12 @@ class Agent
         ));
     }
 
+
+
     /**
      * Fire the error event.
      */
-    private function fireErrorEvent(string $message, Exception $exception): void
+    private function fireErrorEvent(string|null $message, Exception $exception): void
     {
         $metadata = [
             'model' => $this->options->get('model') ?? 'gpt-4o',

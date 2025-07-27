@@ -113,7 +113,7 @@ Use getMessages() to retrieve the current conversation's message history:
 ```php
 $messages = $agent->getMessages();
 ```
-You can also control token usage by setting a maximum token limit for the input and total tokens used in the conversation. Provided token usage is just an estimation for plain English text, implement your own logic to calculate the exact token usage based on your needs.
+You can also control token usage by setting a maximum token limit for the input and total tokens used in the conversation. Provided token usage maybe not exactly what you need in your own use case, implement your own logic to calculate token usage based on your needs.
 ```php
 $agent->setMaxInputTokens(1000); // Limit input tokens to 1000, default is 4096 (set in config/agents.php)
 $agent->setMaxConversationTokens(5000); // Limit total conversation tokens to 5000, default is 10,000 (set in config/agents.php)
@@ -134,53 +134,43 @@ Event::listen(AgentResponseGenerated::class, function ($event) {
 ### **Level 2: Agent with Tools**
 **Concept:** Agent can use tools (retrieval, functions, APIs, etc).
 
-**OpenAI Official Tools**
 1. RAG (Retrieval-Augmented Generation)—Allows agents to retrieve relevant documents from a knowledge base.
 ```php
 use Sapiensly\OpenaiAgents\Facades\Agent
 $agent = Agent::agent();
 $agent->useRAG($vectorStoreId); // $vectorStoreId is ID or name of an existing vector store in your OpenAI account. Array of vector store IDs is supported.
 $agent->useRAG($vectorStoreId, $maxNumResults); // Optional: specify max number of results to return, default set in config/agents.php
+$response = $agent->chat('What is our refund policy?');
 ```
-TODO: Function calling!
+TODO: Document how to create and manage vector stores and files in OpenAI.
 
-
+2. Function calling—Allows agents to call functions with structured parameters.
 ```php
-$agent = Agent::create(['model' => 'gpt-4o']);
-$agent->registerCodeInterpreter('cntr_your_container_id');
-$agent->registerRetrieval(['k' => 3]);
-$agent->registerWebSearch();
-$response = $agent->chat('Analyze this data and search for recent information');
+use Sapiensly\OpenaiAgents\Example\AI\WeatherService; //included as an example
+$agent->useFunctions(WeatherService::class);
+$response = $agent->chat('calculate wind chill factor for a temperature of 5°C');
 ```
+The `useFunctions` method accepts four different parameter types:
+- **String**: Fully qualified class name that exists in the application. The method will instantiate the class and generate function schemas from its public methods.
+- **Object**: An instance of a class. The method will extract the class name and generate function schemas from its public methods.
+- **Array**: An array of function schemas or callables. The method will register each callable with a generated name.
+- **Callable**: A single callable function. The method will register it with a generated name.
 
+3. Web Search—Allows agents to search the web for recent information.
 ```php
-$runner = Agent::runner();
-$runner->registerTool('calculator', fn($args) => eval("return {$args['expression']};"));
-$response = $runner->run('Calculate 15 * 23');
+$agent->useWebSearch();
+$response = $agent->chat('search in web latest news fo APPL stock');
 ```
-
-**OpenAI Official Tools:**
+You can customize web search behavior by passing optional parameters to the `useWebSearch` method:
 ```php
-$agent = Agent::create(['model' => 'gpt-4o']);
-$agent->registerCodeInterpreter('cntr_your_container_id');
-$agent->registerRetrieval(['k' => 3]);
-$agent->registerWebSearch();
-$response = $agent->chat('Analyze this data and search for recent information');
+$agent->useWebSearch($search_context_size); // $search_context_size: The desired search context size. Valid options: 'high', 'medium', 'low'. Default is medium.
+$agent->useWebSearch($search_context_size, $country); // $country: The optional country for approximate user location must be a two-letter ISO format.
+$agent->useWebSearch($search_context_size, $country, $city); // $city Optional city for approximate user location.
 ```
-
-**Config:**
-```php
-'progressive' => [
-    'level' => 2,
-    'default_tools' => ['calculator', 'date', 'rag', 'vector_store', 'file_upload'],
-],
-'rag' => [
-    'enabled' => true,
-    'default_k' => 5,
-    'default_r' => 0.7,
-    'auto_setup' => true,
-],
-```
+TODO: Image generation
+TODO: Code Interpreter
+TODO: Remote MCP Tools
+TODO: Computer use
 
 ### **Level 3: Multi-Agents**
 **Concept:** Multiple specialized agents collaborate (handoff, workflows).

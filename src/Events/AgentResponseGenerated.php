@@ -13,7 +13,7 @@ class AgentResponseGenerated
 
     public function __construct(
         public string $agentId,
-        public string $userMessage,
+        public string|null $userMessage,
         public string $response,
         public array $metadata = []
     ) {}
