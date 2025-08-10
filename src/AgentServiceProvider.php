@@ -148,8 +148,12 @@ class AgentServiceProvider extends ServiceProvider
 
         // Register SecurityManager
         $this->app->singleton(SecurityManager::class, function ($app) {
-            return new SecurityManager($app['config']['agents']);
+            return new SecurityManager(
+                $app->make(AgentRegistry::class), // Primer parámetro: AgentRegistry
+                $app['config']['agents']         // Segundo parámetro: array config
+            );
         });
+
 
         // Register MetricsCollector
         $this->app->singleton(MetricsCollector::class, function ($app) {

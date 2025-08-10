@@ -148,7 +148,7 @@ TODO: Document how to create and manage vector stores and files in OpenAI.
 ```php
 use Sapiensly\OpenaiAgents\Example\AI\WeatherService; //included as an example
 $agent->useFunctions(WeatherService::class);
-$response = $agent->chat('calculate wind chill factor for a temperature of 5°C');
+$response = $agent->chat('Calculate wind chill factor for a temperature of 5°C');
 ```
 The `useFunctions` method accepts four different parameter types:
 - **String**: Fully qualified class name that exists in the application. The method will instantiate the class and generate function schemas from its public methods.
@@ -159,7 +159,7 @@ The `useFunctions` method accepts four different parameter types:
 3. Web Search—Allows agents to search the web for recent information.
 ```php
 $agent->useWebSearch();
-$response = $agent->chat('search in web latest news fo APPL stock');
+$response = $agent->chat('Search in web latest news fo AAPL stock');
 ```
 You can customize web search behavior by passing optional parameters to the `useWebSearch` method:
 ```php
@@ -175,18 +175,26 @@ TODO: Computer use
 ### **Level 3: Multi-Agents**
 **Concept:** Multiple specialized agents collaborate (handoff, workflows).
 ```php
-$runner = Agent::runner();
-$runner->setHandoffOrchestrator(app(HandoffOrchestrator::class));
-$response = $runner->run('I need technical help and pricing');
+use Sapiensly\OpenaiAgents\Facades\Agent;
+// Create a runner to orchestrate multiagent execution
+$runner = Agent::runner(); 
+// As a simplified example, let's create two agents with different instructions
+$japan_agent = Agent::agent()->setInstructions("You are expert in Japan. Always answer in Japanese.");
+$math_agent = Agent::agent()->setInstructions("You are expert in Math. Always answer in French");
+// Now we can register these agents with the runner by passing their names, the agent instances, and instructions on when to use them
+$runner->registerAgent('japan_agent', $japan_agent, 'When the user asks about Japan');
+$runner->registerAgent('math_agent', $math_agent, 'When the user asks about math');
+// Now we can run the runner with a conversation to see how it works
+$response1 = $runner->run("Hello chat"); // the answer will be in English
+$response1_agent = $runner->getCurrentAgentName(); // 'runner_agent', this is the default name for the runner agent
+$response2 = $runner->run("What is the best result Japan has achieved in a World Cup?"); // the answer will be in Japanese
+$response2_agent = $runner->getCurrentAgentName(); // 'japan_agent'
+$response3 = $runner->run("In advanced Math, what is a Fourier Transformation"); // the answer will be in French
+$response3_agent = $runner->getCurrentAgentName(); // 'math_agent'
+$response4 = $runner->run("Thank you. Do you know what is Laravel?"); // the answer will be in English, as no specialized agent is registered for Laravel
+$response4_agent = $runner->getCurrentAgentName(); // 'runner_agent'
 ```
-**Config:**
-```php
-'progressive' => [
-    'level' => 3,
-    'multi_agents' => true,
-    'auto_handoff' => true,
-],
-```
+
 
 ### **Level 4: Autonomous Agents**
 **Concept:** Agents can decide, act, monitor, and learn autonomously. Not just reactive: can initiate actions, monitor systems, and adapt. New features: `mode`, `autonomy_level`, `capabilities`, `execute()`, self-monitoring, decision making.

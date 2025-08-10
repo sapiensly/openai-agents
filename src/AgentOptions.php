@@ -29,7 +29,7 @@ class AgentOptions
      * @param int|null $max_turns The maximum number of turns to include as conversation history
      * @param int|null $max_input_tokens The maximum number of input tokens for the agent (default is 4096, max is 8192)
      * @param int|null $max_conversation_tokens The maximum number of tokens to include in the conversation history (default is 10,000, max is 100,000)
-     *
+     * @param array|null $handoff_target_permission Permission array for handoff target. Examples: ['*'] = allow all, ['agent1', 'agent2'] = whitelist, ['*', 'blacklist' => ['bad_*']] = all except blacklist
      * @throws InvalidArgumentException If any of the provided values are invalid
      */
     public function __construct(
@@ -45,6 +45,7 @@ class AgentOptions
         public int|null    $max_turns = null,
         public int|null    $max_input_tokens = null,
         public int|null    $max_conversation_tokens = null,
+        public array|null  $handoff_target_permission = null, // Permission array for handoff target
     ) {
         // Establecer valores por defecto dentro del constructor
         $this->tools ??= [];
@@ -60,6 +61,7 @@ class AgentOptions
         $this->max_turns = $this->max_turns ?? config('agents.default.max_turns', 10);
         $this->max_input_tokens = $this->max_input_tokens ?? config('agents.default.max_input_tokens', 4096);
         $this->max_conversation_tokens = $this->max_conversation_tokens ?? config('agents.default.max_conversation_tokens', 10000);
+        $this->handoff_target_permission = $this->handoff_target_permission ?? config('agents.handoff.security.default_target_permission', ['*']); // Default to allow all handoff targets
 
         // Validaciones
         if ($this->temperature !== null && ($this->temperature < 0.0 || $this->temperature > 1.0)) {
@@ -86,6 +88,10 @@ class AgentOptions
             throw new InvalidArgumentException('Max conversation tokens must be between 1 and 100000');
         }
 
+        if ($this->handoff_target_permission !== null && !is_array($this->handoff_target_permission)) {
+            throw new InvalidArgumentException('Handoff target permission must be an array');
+        }
+
     }
 
     /**
@@ -109,6 +115,7 @@ class AgentOptions
             max_turns: $options['max_turns'] ?? config('agents.default.max_turns', 10),
             max_input_tokens: $options['max_input_tokens'] ?? config('agents.default.max_input_tokens', 4096),
             max_conversation_tokens: $options['max_conversation_tokens'] ?? config('agents.default.max_conversation_tokens', 10000),
+            handoff_target_permission: $options['handoff_target_permission'] ?? null
         );
     }
 
@@ -132,6 +139,7 @@ class AgentOptions
             'max_turns' => $this->max_turns,
             'max_input_tokens' => $this->max_input_tokens,
             'max_conversation_tokens' => $this->max_conversation_tokens,
+            'handoff_target_permission' => $this->handoff_target_permission,
         ], fn($value) => $value !== null);
     }
 
@@ -169,6 +177,7 @@ class AgentOptions
             'max_turns' => $this->max_turns,
             'max_input_tokens' => $this->max_input_tokens,
             'max_conversation_tokens' => $this->max_conversation_tokens,
+            'handoff_target_permission' => $this->handoff_target_permission,
             default => null,
         };
     }
@@ -282,6 +291,28 @@ class AgentOptions
     }
 
     /**
+     * Get Instructions.
+     */
+    public function getInstructions(): string
+    {
+        return $this->instructions ?? '';
+    }
+
+    /**
+     * Append Instructions.
+     */
+    public function appendInstructions(string $additionalInstructions): self
+    {
+        if (empty($this->instructions)) {
+            $this->instructions = $additionalInstructions;
+        } else {
+            $this->instructions .= "\n" . $additionalInstructions;
+        }
+        return $this;
+    }
+
+
+    /**
      * Set Max Turns.
      *
      * @param int $value The value to set
@@ -328,5 +359,75 @@ class AgentOptions
         $this->max_conversation_tokens = $value;
         return $this;
     }
+
+    // Métodos fluent simplificados para handoff permissions
+
+    /**
+     * Set Handoff Target Permission.
+     *
+     * @param array $permission The permissions to set
+     */
+    public function setHandoffTargetPermission(array $permission): self
+    {
+        $this->handoff_target_permission = $permission;
+        return $this;
+    }
+
+    /**
+     * Allow all handoffs by setting the handoff target permission to all targets.
+     *
+     * @return self
+     */
+    public function allowAllHandoffs(): self
+    {
+        $this->handoff_target_permission = ['*'];
+        return $this;
+    }
+
+    /**
+     * Allow handoff from specified agents.
+     *
+     * @param string ...$agentNames Names of the agents allowed for handoff
+     */
+    public function allowHandoffFrom(string ...$agentNames): self
+    {
+        $this->handoff_target_permission = array_values($agentNames);
+        return $this;
+    }
+
+    /**
+     * Allow all except specified agents.
+     *
+     * @param string ...$blockedAgentNames List of agent names to be excluded
+     * @return self
+     */
+    public function allowAllExcept(string ...$blockedAgentNames): self
+    {
+        $this->handoff_target_permission = ['*', 'blacklist' => array_values($blockedAgentNames)];
+        return $this;
+    }
+
+    /**
+     * Deny all handoff permissions by clearing the handoff target permissions array.
+     *
+     * @return self
+     */
+    public function denyAllHandoffs(): self
+    {
+        $this->handoff_target_permission = [];
+        return $this;
+    }
+
+    /**
+     * Get Security Permissions.
+     *
+     * @return array The security permissions.
+     */
+    public function getSecurityPermissions(): array
+    {
+        // Return the handoff target permission as the security permissions
+        return $this->handoff_target_permission ?? [];
+    }
+
 
 }

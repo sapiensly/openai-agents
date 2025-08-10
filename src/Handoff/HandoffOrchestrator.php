@@ -8,7 +8,6 @@ use Sapiensly\OpenaiAgents\Agent;
 use Sapiensly\OpenaiAgents\Registry\AgentRegistry;
 use Sapiensly\OpenaiAgents\State\ConversationStateManager;
 use Sapiensly\OpenaiAgents\Security\SecurityManager;
-use Sapiensly\OpenaiAgents\Security\HandoffSecurityException;
 use Sapiensly\OpenaiAgents\Metrics\MetricsCollector;
 use Random\RandomException;
 use Sapiensly\OpenaiAgents\Handoff\ReversibleHandoffManager;
@@ -157,11 +156,13 @@ class HandoffOrchestrator
      * Handle a handoff request.
      *
      * @param HandoffRequest $request The handoff request
+     * @param Agent $sourceAgent The source agent initiating the handoff
+     * @param Agent $targetAgent The target agent to hand off to
      * @return HandoffResult The handoff result
      */
-    public function handleHandoff(HandoffRequest $request): HandoffResult
+    public function handleHandoff(HandoffRequest $request, Agent $sourceAgent, Agent $targetAgent): HandoffResult
     {
-        $spanId = $this->tracing->startSpan('handoff_execution', [
+        $this->tracing->startSpan('handoff_execution', [
             'source_agent' => $request->sourceAgentId,
             'target_agent' => $request->targetAgentId,
             'conversation_id' => $request->conversationId,
@@ -170,11 +171,12 @@ class HandoffOrchestrator
 
         try {
             // Validate the handoff request
-            $validationSpan = $this->tracing->startSpan('handoff_validation', [
+            $this->tracing->startSpan('handoff_validation', [
                 'request_id' => uniqid('handoff_', true)
             ]);
 
-            $validationResult = $this->validator->validateHandoff($request);
+
+            $validationResult = $this->validator->validateHandoff($request, $sourceAgent, $targetAgent);
             $this->tracing->endSpan(['valid' => $validationResult->isValid()]);
 
             if (!$validationResult->isValid()) {
@@ -190,13 +192,14 @@ class HandoffOrchestrator
             }
 
             // Check permissions
-            $permissionSpan = $this->tracing->startSpan('permission_check', [
+            $this->tracing->startSpan('permission_check', [
                 'source_agent' => $request->sourceAgentId,
                 'target_agent' => $request->targetAgentId
             ]);
 
+
             try {
-                $this->security->validateHandoffPermission($request->sourceAgentId, $request->targetAgentId);
+                $this->security->validateHandoffPermission($sourceAgent, $targetAgent);
             } catch (HandoffSecurityException $e) {
                 $this->tracing->endSpan(['permitted' => false]);
                 $this->tracing->endSpan(['success' => false, 'error' => 'permission_denied']);
@@ -212,22 +215,10 @@ class HandoffOrchestrator
 
             $this->tracing->endSpan(['permitted' => true]);
 
-            // Get the target agent
-            $targetAgent = $this->registry->getAgent($request->targetAgentId);
-            if (!$targetAgent) {
-                $this->tracing->endSpan(['success' => false, 'error' => 'agent_not_found']);
-                $handoffId = uniqid('handoff_', true);
-                return new HandoffResult(
-                    $handoffId,
-                    'failed',
-                    $request->targetAgentId,
-                    "Target agent {$request->targetAgentId} not found",
-                    ['trace_id' => $this->tracing->getTraceId()]
-                );
-            }
+
 
             // Save handoff state
-            $stateSpan = $this->tracing->startSpan('state_save', [
+            $this->tracing->startSpan('state_save', [
                 'conversation_id' => $request->conversationId
             ]);
 
@@ -634,4 +625,15 @@ class HandoffOrchestrator
     {
         return $this->tracing;
     }
+
+    /**
+     * Get the agent registry.
+     *
+     * @return AgentRegistry The agent registry
+     */
+    public function getRegistry(): AgentRegistry
+    {
+        return $this->registry;
+    }
+
 }

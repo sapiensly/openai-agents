@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Sapiensly\OpenaiAgents\Handoff;
 
+use Sapiensly\OpenaiAgents\Agent;
 use Sapiensly\OpenaiAgents\Registry\AgentRegistry;
 use Sapiensly\OpenaiAgents\Security\SecurityManager;
 use Sapiensly\OpenaiAgents\State\ConversationStateManager;
@@ -36,19 +37,19 @@ class HandoffValidator
      * @param HandoffRequest $request The handoff request to validate
      * @return ValidationResult The validation result
      */
-    public function validateHandoff(HandoffRequest $request): ValidationResult
+    public function validateHandoff(HandoffRequest $request, Agent $sourceAgent, Agent $targetAgent): ValidationResult
     {
         $errors = [];
         $warnings = [];
 
         // 1. Validate permissions
-        if (!$this->validatePermissions($request)) {
-            $errors[] = "Permission denied for handoff from {$request->sourceAgentId} to {$request->targetAgentId}";
+        if (!$this->validatePermissions($targetAgent, $sourceAgent)) {
+            $errors[] = "Permission denied for handoff from {$sourceAgent->getId()} by target agent {$targetAgent->getId()}";
         }
 
         // 2. Validate target agent exists and is available
-        if (!$this->validateTargetAgent($request)) {
-            $errors[] = "Target agent '{$request->targetAgentId}' not found or not available";
+        if (!$this->validateTargetAgent($targetAgent)) {
+            $errors[] = "Target agent '{$targetAgent->getId()}' not found or not available";
         }
 
         // 3. Validate no circular handoffs
@@ -94,13 +95,14 @@ class HandoffValidator
     /**
      * Validate permissions for the handoff.
      *
-     * @param HandoffRequest $request The handoff request
+     * @param Agent $sourceAgent
+     * @param Agent $targetAgent
      * @return bool True if permissions are valid
      */
-    private function validatePermissions(HandoffRequest $request): bool
+    private function validatePermissions(Agent $sourceAgent, Agent $targetAgent): bool
     {
         try {
-            $this->security->validateHandoffPermission($request->sourceAgentId, $request->targetAgentId);
+            $this->security->validateHandoffPermission($sourceAgent, $targetAgent);
             return true;
         } catch (HandoffSecurityException $e) {
             return false;
@@ -110,19 +112,13 @@ class HandoffValidator
     /**
      * Validate that the target agent exists and is available.
      *
-     * @param HandoffRequest $request The handoff request
+     * @param Agent $target
      * @return bool True if target agent is valid
      */
-    private function validateTargetAgent(HandoffRequest $request): bool
+    private function validateTargetAgent(Agent $target): bool
     {
-        $targetAgent = $this->registry->getAgent($request->targetAgentId);
-        
-        if (!$targetAgent) {
-            return false;
-        }
-
-        // Check if agent is available (not busy, online, etc.)
-        // This is a basic check - in a real implementation you might check agent status
+        // TODO - Check if agent is available (not busy, online, etc.)
+        // In a real implementation you might check agent status
         return true;
     }
 
@@ -135,7 +131,7 @@ class HandoffValidator
     private function detectCircularHandoff(HandoffRequest $request): bool
     {
         $handoffHistory = $this->stateManager->getHandoffHistory($request->conversationId);
-        
+
         // Check for immediate circular handoff
         if ($request->sourceAgentId === $request->targetAgentId) {
             return true;
@@ -143,7 +139,7 @@ class HandoffValidator
 
         // Check for circular patterns in recent history
         $recentHandoffs = array_slice($handoffHistory, -3); // Check last 3 handoffs
-        
+
         foreach ($recentHandoffs as $handoff) {
             if (isset($handoff['source']) && isset($handoff['target'])) {
                 // Check if we're going back to a recent source
@@ -166,7 +162,7 @@ class HandoffValidator
     {
         $maxHandoffs = $this->config['max_handoffs_per_conversation'] ?? 10;
         $handoffHistory = $this->stateManager->getHandoffHistory($request->conversationId);
-        
+
         return count($handoffHistory) >= $maxHandoffs;
     }
 
@@ -179,13 +175,13 @@ class HandoffValidator
     private function validateCapabilities(HandoffRequest $request): bool
     {
         $targetAgent = $this->registry->getAgent($request->targetAgentId);
-        
+
         if (!$targetAgent) {
             return false;
         }
 
         $agentCapabilities = $this->registry->getAgentCapabilities($request->targetAgentId);
-        
+
         foreach ($request->requiredCapabilities as $requiredCapability) {
             if (!in_array($requiredCapability, $agentCapabilities)) {
                 return false;
@@ -205,7 +201,7 @@ class HandoffValidator
     {
         $contextSize = strlen(json_encode($request->context));
         $maxContextSize = $this->config['max_context_size'] ?? 10000; // 10KB default
-        
+
         return $contextSize > $maxContextSize;
     }
 
@@ -220,4 +216,4 @@ class HandoffValidator
         $fallbackAgent = $this->registry->getAgent($request->fallbackAgentId);
         return $fallbackAgent !== null;
     }
-} 
+}

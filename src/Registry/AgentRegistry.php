@@ -8,155 +8,143 @@ use Sapiensly\OpenaiAgents\Agent;
 /**
  * Class AgentRegistry
  *
- * Registry for managing agents and their capabilities.
- * Provides methods for registering agents, finding agents by ID or capabilities,
- * and retrieving agent capabilities.
+ * Manages agent registration and lookup by both ID and name.
  */
 class AgentRegistry
 {
     /**
-     * Array of registered agents, indexed by agent ID.
+     * Registered agents by ID.
      *
      * @var array<string, Agent>
      */
-    private array $agents = [];
+    private array $agentsById = [];
 
     /**
-     * Index of agent IDs by capability.
-     * Used for quickly finding agents with specific capabilities.
+     * Registered agents by name.
      *
-     * @var array<string, array<string>>
+     * @var array<string, Agent>
      */
-    private array $capabilityIndex = [];
+    private array $agentsByName = [];
 
     /**
-     * Register an agent with the registry.
+     * Agent capabilities mapping.
      *
-     * @param string $agentId The ID to associate with the agent
-     * @param Agent $agent The agent instance to register
-     * @param array $capabilities Array of capabilities the agent has
+     * @var array<string, array>
+     */
+    private array $capabilities = [];
+
+    /**
+     * Register an agent with both ID and name.
+     *
+     * @param Agent $agent The agent to register
+     * @param string|null $name Optional name for the agent
+     * @param array $capabilities Agent capabilities
      * @return void
      */
-    public function registerAgent(string $agentId, Agent $agent, array $capabilities = []): void
+    public function registerAgent(Agent $agent, ?string $name = null, array $capabilities = []): void
     {
-        $this->agents[$agentId] = $agent;
+        $agentId = $agent->getId();
 
-        // Index by capabilities for quick lookup
-        foreach ($capabilities as $capability) {
-            if (!isset($this->capabilityIndex[$capability])) {
-                $this->capabilityIndex[$capability] = [];
-            }
-            $this->capabilityIndex[$capability][] = $agentId;
+        // Register by ID
+        if ($agentId) {
+            $this->agentsById[$agentId] = $agent;
+            $this->capabilities[$agentId] = $capabilities;
+        }
+
+        // Register by name if provided
+        if ($name !== null) {
+            $this->agentsByName[$name] = $agent;
+            $this->capabilities[$name] = $capabilities;
         }
     }
 
     /**
-     * Get an agent by ID.
+     * Get an agent by ID or name.
      *
-     * @param string $agentId The ID of the agent to retrieve
-     * @return Agent|null The agent instance, or null if not found
+     * @param string $identifier Agent ID or name
+     * @return Agent|null The agent instance or null if not found
      */
-    public function getAgent(string $agentId): ?Agent
+    public function getAgent(string $identifier): ?Agent
     {
-        return $this->agents[$agentId] ?? null;
+        // Try by ID first
+        if (isset($this->agentsById[$identifier])) {
+            return $this->agentsById[$identifier];
+        }
+
+        // Try by name
+        if (isset($this->agentsByName[$identifier])) {
+            return $this->agentsByName[$identifier];
+        }
+
+        return null;
     }
 
     /**
-     * Find agents that have all the specified capabilities.
+     * Get agent capabilities by ID or name.
      *
-     * @param array $capabilities Array of capabilities to search for
-     * @return array<Agent> Array of agent instances that have all the specified capabilities
+     * @param string $identifier Agent ID or name
+     * @return array Agent capabilities
      */
-    public function findAgentsByCapabilities(array $capabilities): array
+    public function getAgentCapabilities(string $identifier): array
     {
-        if (empty($capabilities)) {
-            return [];
-        }
+        return $this->capabilities[$identifier] ?? [];
+    }
 
-        $matchingAgentIds = [];
-
-        foreach ($capabilities as $capability) {
-            if (isset($this->capabilityIndex[$capability])) {
-                if (empty($matchingAgentIds)) {
-                    $matchingAgentIds = $this->capabilityIndex[$capability];
-                } else {
-                    $matchingAgentIds = array_intersect($matchingAgentIds, $this->capabilityIndex[$capability]);
-                }
-            } else {
-                // If any capability is not found, no agents match all capabilities
-                return [];
-            }
-        }
-
-        // Convert agent IDs to agent instances
-        return array_map(
-            fn($id) => $this->agents[$id],
-            $matchingAgentIds
-        );
+    /**
+     * Check if an agent exists by ID or name.
+     *
+     * @param string $identifier Agent ID or name
+     * @return bool True if agent exists
+     */
+    public function hasAgent(string $identifier): bool
+    {
+        return isset($this->agentsById[$identifier]) || isset($this->agentsByName[$identifier]);
     }
 
     /**
      * Get all registered agents.
      *
-     * @return array<string, Agent> Array of all registered agents
+     * @return array<string, Agent> All agents indexed by ID
      */
     public function getAllAgents(): array
     {
-        return $this->agents;
+        return $this->agentsById;
     }
 
     /**
-     * Get the capabilities of a specific agent.
+     * Get all registered agent names.
      *
-     * @param string $agentId The ID of the agent
-     * @return array Array of capabilities the agent has
+     * @return array<string, Agent> All agents indexed by name
      */
-    public function getAgentCapabilities(string $agentId): array
+    public function getAgentsByName(): array
     {
-        $capabilities = [];
-        foreach ($this->capabilityIndex as $capability => $agentIds) {
-            if (in_array($agentId, $agentIds)) {
-                $capabilities[] = $capability;
-            }
-        }
-        return $capabilities;
+        return $this->agentsByName;
     }
 
     /**
-     * Check if an agent has a specific capability.
+     * Unregister an agent by ID or name.
      *
-     * @param string $agentId The ID of the agent
-     * @param string $capability The capability to check for
-     * @return bool True if the agent has the capability, false otherwise
+     * @param string $identifier Agent ID or name
+     * @return bool True if agent was unregistered
      */
-    public function hasCapability(string $agentId, string $capability): bool
+    public function unregisterAgent(string $identifier): bool
     {
-        return isset($this->capabilityIndex[$capability]) &&
-               in_array($agentId, $this->capabilityIndex[$capability]);
-    }
+        $found = false;
 
-    /**
-     * Find the best agent for a set of capabilities based on a priority function.
-     *
-     * @param array $capabilities Array of required capabilities
-     * @param callable|null $priorityFn Optional function to determine agent priority
-     * @return Agent|null The best matching agent, or null if none found
-     */
-    public function findBestAgent(array $capabilities, ?callable $priorityFn = null): ?Agent
-    {
-        $candidates = $this->findAgentsByCapabilities($capabilities);
-
-        if (empty($candidates)) {
-            return null;
+        // Remove by ID
+        if (isset($this->agentsById[$identifier])) {
+            unset($this->agentsById[$identifier]);
+            unset($this->capabilities[$identifier]);
+            $found = true;
         }
 
-        if ($priorityFn !== null) {
-            // Sort candidates by priority
-            usort($candidates, $priorityFn);
-            return $candidates[0] ?? null;
+        // Remove by name
+        if (isset($this->agentsByName[$identifier])) {
+            unset($this->agentsByName[$identifier]);
+            unset($this->capabilities[$identifier]);
+            $found = true;
         }
 
-        // Default: return the first matching agent
-        return reset($candidates);
+        return $found;
     }
 }

@@ -80,7 +80,8 @@ class Agent extends Facade
      */
     public static function createRunner(AgentClass|null $agent = null, ?int $maxTurns = null): Runner
     {
-        return static::manager()->runner($agent, $maxTurns);
+        // Name left null, pass maxTurns in correct position
+        return static::manager()->runner($agent, null, $maxTurns);
     }
 
     /**

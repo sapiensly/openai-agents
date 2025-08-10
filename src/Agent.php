@@ -10,6 +10,9 @@ use OpenAI\Client;
 use Random\RandomException;
 use ReflectionException;
 use Sapiensly\OpenaiAgents\Events\AgentResponseGenerated;
+use Sapiensly\OpenaiAgents\MCP\MCPManager;
+use Sapiensly\OpenaiAgents\MCP\MCPServer;
+use Sapiensly\OpenaiAgents\MCP\MCPTool;
 use Sapiensly\OpenaiAgents\Tools\ToolCacheManager;
 use Sapiensly\OpenaiAgents\Tools\VectorStoreTool;
 use Sapiensly\OpenaiAgents\Traits\FunctionSchemaGenerator;
@@ -105,6 +108,17 @@ class Agent
      */
     protected bool $useWebSearch = false;
 
+    /**
+     * MCP manager instance
+     *
+     * @var MCPManager|null
+     */
+    protected MCPManager|null $mcpManager = null;
+
+    /**
+     * Whether MCP is enabled for this agent
+     */
+    protected bool $useMCP = false;
 
     /**
      * Total tokens used by the agent.
@@ -117,9 +131,11 @@ class Agent
      *
      * @param Client $client The OpenAI client instance
      * @param AgentOptions|array|null $options Configuration options for the agent
-     * @param string|null $systemPrompt Optional system prompt to initialize the conversation
+     * @param string|null $instructions
+     * @param string|null $id
+     * @param ToolCacheManager|null $toolCacheManager
      */
-    public function __construct(Client $client, AgentOptions|array|null $options = null, string|null $systemPrompt = null, string|null $id = null, ToolCacheManager|null $toolCacheManager = null)
+    public function __construct(Client $client, AgentOptions|array|null $options = null, string|null $instructions = null, string|null $id = null, ToolCacheManager|null $toolCacheManager = null)
     {
         $agentOptions = new AgentOptions();
 
@@ -139,14 +155,9 @@ class Agent
         $this->autonomyLevel = $agentOptions->get('autonomy_level') ?? null;
         $this->capabilities = $agentOptions->get('capabilities') ?? null;
 
-        // Handle system prompt from either parameter or options
-        $finalSystemPrompt = $systemPrompt;
-        if ($finalSystemPrompt === null && $agentOptions->get('system_prompt') !== null) {
-            $finalSystemPrompt = $agentOptions->get('system_prompt');
-        }
-
-        if (!empty($finalSystemPrompt)) {
-            $this->messages[] = ['role' => 'system', 'content' => $finalSystemPrompt];
+        // Handle $instructions
+        if ($instructions !== null ) {
+            $agentOptions->setInstructions($instructions);
         }
     }
 
@@ -359,6 +370,90 @@ class Agent
     }
 
     /**
+     * Get individual option Instructions
+     *
+     */
+    public function getInstructions(): string
+    {
+        return $this->options->getInstructions() ?? '';
+    }
+
+    /**
+     * Append instructions to the existing instructions.
+     */
+    public function appendInstructions(string $instructions): void
+    {
+        $this->options->appendInstructions($instructions);
+    }
+
+    /**
+     * Set Handoff Target Permission.
+     *
+     * @param array $permission The permissions to set
+     */
+    public function setHandoffTargetPermission(array $permission): self
+    {
+        $this->options->handoff_target_permission = $permission;
+        return $this;
+    }
+
+    /**
+     * Allow all handoffs by setting the handoff target permission to all targets.
+     *
+     * @return self
+     */
+    public function allowAllHandoffs(): self
+    {
+        $this->options->handoff_target_permission = ['*'];
+        return $this;
+    }
+
+    /**
+     * Allow handoff from specified agents.
+     *
+     * @param string ...$agentNames Names of the agents allowed for handoff
+     */
+    public function allowHandoffFrom(string ...$agentNames): self
+    {
+        $this->options->handoff_target_permission = array_values($agentNames);
+        return $this;
+    }
+
+    /**
+     * Allow all except specified agents.
+     *
+     * @param string ...$blockedAgentNames List of agent names to be excluded
+     * @return self
+     */
+    public function allowAllExcept(string ...$blockedAgentNames): self
+    {
+        $this->options->handoff_target_permission = ['*', 'blacklist' => array_values($blockedAgentNames)];
+        return $this;
+    }
+
+    /**
+     * Deny all handoff permissions by clearing the handoff target permissions array.
+     *
+     * @return self
+     */
+    public function denyAllHandoffs(): self
+    {
+        $this->options->handoff_target_permission = [];
+        return $this;
+    }
+
+    /**
+     * Get the agent's security permissions.
+     *
+     * @return array
+     */
+    public function getSecurityPermissions(): array
+    {
+        return $this->options->getSecurityPermissions();
+    }
+
+
+    /**
      * Set or update the system prompt for this agent.
      *
      * This method allows updating the agent's system prompt after initialization.
@@ -498,6 +593,16 @@ class Agent
         return $this->ragConfig;
     }
 
+    /**
+     * Get the MCP manager.
+     *
+     * @return MCPManager|null
+     */
+    public function getMCPManager(): MCPManager|null
+    {
+        return $this->mcpManager;
+    }
+
 
 
 
@@ -525,14 +630,23 @@ class Agent
      * Create a simple runner for Level 2 progressive enhancement.
      * Provides basic tool integration with minimal configuration.
      *
-     * @param AgentOptions|array $options Optional configuration options
+     * @param AgentOptions|array|null $options Optional configuration options
+     * @param string|null $instructions
+     * @param string|null $name
      * @return Runner A configured runner instance
+     * @throws Exception
      */
-    public static function runner(AgentOptions|array $options = []): Runner
+    public static function runner(AgentOptions|array|null $options = null, string|null $instructions = null, string|null $name = null): Runner
     {
+        $options ??= [];
         $manager = app(AgentManager::class);
         $agent = $manager->agent($options);
-        return new Runner($agent);
+        $baseInstructions = $instructions ?? config('agents.multi_agent.default_runner.instructions');
+        if ($baseInstructions) {
+            $agent->setInstructions($baseInstructions);
+        }
+        $agentName = $name ?? config('agents.default_runner.name', 'runner_agent');
+        return new Runner($agent, $agentName);
     }
 
     /**
@@ -913,6 +1027,250 @@ class Agent
     }
 
     /**
+     * Register MCP tools.
+     *
+     * Accepts:
+     * - MCPTool instance
+     * - Array definition: ['server' => 'name', 'name' => 'tool', 'description' => ..., 'uri' => ..., 'parameters' => [...], 'schema' => [...]]
+     * - Array of the above
+     *
+     * @param MCPTool|array|array[] $toolOrDef
+     * @param string|null $serverName Optional server name if not provided inside definition
+     * @param array $options Options for proxy tool creation (e.g., ['mode' => 'call'|'stream'])
+     * @return self
+     */
+    public function registerMCPTool(MCPTool|array $toolOrDef, ?string $serverName = null, array $options = []): self
+    {
+        if (!$this->mcpManager) {
+            $this->mcpManager = new MCPManager();
+        }
+
+        // If it's a list of items
+        if (is_array($toolOrDef) && isset($toolOrDef[0]) && (is_array($toolOrDef[0]) || $toolOrDef[0] instanceof MCPTool)) {
+            foreach ($toolOrDef as $item) {
+                $this->registerMCPTool($item, $serverName, $options);
+            }
+            $this->useMCP = true;
+            return $this;
+        }
+
+        if ($toolOrDef instanceof MCPTool) {
+            $tool = $toolOrDef;
+        } else {
+            // Array definition
+            $def = $toolOrDef;
+            $srvName = $serverName ?? ($def['server'] ?? null);
+            if (!$srvName) {
+                throw new \InvalidArgumentException('Server name is required to register MCP tool definition.');
+            }
+            $server = $this->mcpManager->getServer($srvName);
+            if (!$server) {
+                throw new \InvalidArgumentException("Server '{$srvName}' not found for MCP tool registration.");
+            }
+            $tool = MCPTool::proxyFromDefinition($server, $def, $options);
+        }
+
+        $this->mcpManager->addTool($tool);
+
+        // Register for OpenAI function-calling
+        $this->registerFunctionCalling([$tool->getSchema()]);
+
+        // Store the implementation
+        $toolName = $tool->getName();
+        $this->functionImplementations[$toolName] = function($params) use ($tool) {
+            return $tool->execute($params);
+        };
+
+        $this->useMCP = true;
+        return $this;
+    }
+
+    /**
+     * Register an MCP server (legacy helper retained for BC).
+     */
+    public function registerMCPServer(string $name, string $url, array $config = []): self
+    {
+        if (!$this->mcpManager) {
+            $this->mcpManager = new MCPManager();
+        }
+        $this->mcpManager->addServer($name, $url, $config);
+        $this->useMCP = true;
+        return $this;
+    }
+
+    /**
+     * New: ergonomic registration for one or many MCP servers.
+     * Accepts MCPServer instance, associative array, or list of those.
+     */
+    public function useMCPServer(MCP\MCPServer|array $serverOrList): self
+    {
+        if (!$this->mcpManager) {
+            $this->mcpManager = new MCPManager();
+        }
+
+        // If it's a list
+        if (is_array($serverOrList) && isset($serverOrList[0]) && (is_array($serverOrList[0]) || $serverOrList[0] instanceof MCP\MCPServer)) {
+            foreach ($serverOrList as $item) {
+                $this->useMCPServer($item);
+            }
+            $this->useMCP = true;
+            return $this;
+        }
+
+        if ($serverOrList instanceof MCP\MCPServer) {
+            $this->mcpManager->addServerInstance($serverOrList);
+        } else {
+            // associative array
+            $name = $serverOrList['name'] ?? null;
+            $url = $serverOrList['url'] ?? null;
+            $config = $serverOrList['config'] ?? [];
+            if (!$name || !$url) {
+                throw new \InvalidArgumentException('Server array requires name and url keys.');
+            }
+            $this->mcpManager->addServer($name, $url, $config);
+        }
+
+        $this->useMCP = true;
+        return $this;
+    }
+
+    /**
+     * List registered MCP servers.
+     *
+     * @param bool $onlyEnabled If true, returns only enabled servers
+     * @param bool $verbose If true, include extra details
+     * @return array
+     */
+    public function listMCPServers(bool $onlyEnabled = false, bool $verbose = false): array
+    {
+        if (!$this->mcpManager) {
+            return [];
+        }
+
+        $servers = $onlyEnabled
+            ? $this->mcpManager->getEnabledServers()
+            : $this->mcpManager->getServers();
+
+        $out = [];
+        /** @var MCPServer $srv */
+        foreach ($servers as $name => $srv) {
+            if ($verbose) {
+                $out[$name] = [
+                    'name' => $srv->getName(),
+                    'url' => $srv->getUrl(),
+                    'transport' => $srv->getTransport(),
+                    'enabled' => $srv->isEnabled(),
+                    'resources_count' => count($srv->getResources()),
+                    'supports_sse' => $srv->supportsSSE(),
+                ];
+            } else {
+                $out[] = $name;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * List MCP tools. Optionally, filter by one or more server names.
+     *
+     * @param string|array|null $serverNames 'calc' or ['calc','otro'] to filter. Null for all.
+     * @param bool $onlyEnabled If true, include only enabled tools
+     * @param bool $withSchema If true, include tool schemas/metadata; otherwise names only
+     * @return array
+     */
+    public function listMCPTools(string|array|null $serverNames = null, bool|null $onlyEnabled = null, bool $withSchema = false): array
+    {
+        $onlyEnabled ??= false;
+        if (!$this->mcpManager) {
+            return [];
+        }
+
+        $tools = $onlyEnabled
+            ? $this->mcpManager->getEnabledTools()
+            : $this->mcpManager->getTools();
+
+        // Normalize server filter
+        $serverFilter = null;
+        if (is_string($serverNames) && $serverNames !== '') {
+            $serverFilter = [$serverNames];
+        } elseif (is_array($serverNames) && !empty($serverNames)) {
+            $serverFilter = array_values($serverNames);
+        }
+
+        $out = [];
+        /** @var MCPTool $tool */
+        foreach ($tools as $name => $tool) {
+            $srvName = $tool->getServer()->getName();
+
+            if ($serverFilter && !in_array($srvName, $serverFilter, true)) {
+                continue;
+            }
+
+            if ($withSchema) {
+                $out[$name] = [
+                    'name' => $tool->getName(),
+                    'server' => $srvName,
+                    'resource' => $tool->getResource()->getName(),
+                    'description' => $tool->getResource()->getDescription(),
+                    'enabled' => $tool->isEnabled(),
+                    'schema' => $tool->getSchema(),
+                    'metadata' => $tool->getMetadata(),
+                ];
+            } else {
+                $out[] = $name;
+            }
+        }
+
+        return $out;
+    }
+
+    public function debugMCPServer(string $serverName, array $options = []): array
+    {
+        if (!$this->mcpManager) {
+            return [ 'error' => 'MCP manager not initialized' ];
+        }
+        return $this->mcpManager->debugServer($serverName, $options);
+    }
+
+    /**
+     * Exponer Tools (JSON-RPC) y Resources (REST) de un servidor MCP con filtros.
+     *
+     * - Si no pasas filtros/defaults, aplica inmediatamente (DX más simple)
+     * - Puedes encadenar allow(), deny(), prefix(), sources(), mode(), apply()
+     *
+     * @param string $serverName
+     * @param array $filters   ['allow'=>[], 'deny'=>[], 'prefix'=>'', 'sources'=>['tools','resources']]
+     * @param array $defaults  ['mode'=>'auto'|'call'|'stream']
+     * @return MCP\UniversalExposeBuilder
+     * @throws \Exception
+     */
+    public function exposeMCP(string $serverName, array $filters = [], array $defaults = []): MCP\UniversalExposeBuilder
+    {
+        $builder = new MCP\UniversalExposeBuilder($this, $serverName);
+
+        if (!empty($filters['allow']))   { $builder->allow($filters['allow']); }
+        if (!empty($filters['deny']))    { $builder->deny($filters['deny']); }
+        if (!empty($filters['prefix']))  { $builder->prefix($filters['prefix']); }
+        if (!empty($filters['sources'])) { $builder->sources($filters['sources']); }
+        if (!empty($defaults['mode']))   { $builder->mode($defaults['mode']); }
+
+        if (empty($filters) && empty($defaults)) {
+            $builder->apply(); // Aplica de inmediato si no hay chaining
+        }
+        return $builder;
+    }
+
+    /**
+     * Alias explícito para exponer Tools y Resources con filtros/prefijo.
+     * @throws Exception
+     */
+    public function exposeAllMCPToolsAndResources(string $serverName, array $filters = [], array $defaults = []): MCP\UniversalExposeBuilder
+    {
+        return $this->exposeMCP($serverName, $filters, $defaults);
+    }
+
+    /**
      * Use an existing RAG vector store by ID or name.
      *
      * @param array|string $vector_identifiers Vector store identifiers (ID or name) can be a single string or an array of strings.
@@ -990,6 +1348,41 @@ class Agent
     }
 
     /**
+     * Execute an MCP tool.
+     *
+     * @param string $toolName The tool name
+     * @param array $parameters The tool parameters
+     * @return mixed
+     * @throws Exception If MCP manager is not initialized
+     */
+    public function executeMCPTool(string $toolName, array $parameters = []): mixed
+    {
+        if (!$this->mcpManager) {
+            throw new Exception('MCP manager not initialized');
+        }
+
+        return $this->mcpManager->executeTool($toolName, $parameters);
+    }
+
+    /**
+     * Stream a resource from an MCP server.
+     *
+     * @param string $serverName The server name
+     * @param string $resourceName The resource name
+     * @param array $parameters The resource parameters
+     * @return iterable
+     * @throws Exception If MCP manager is not initialized
+     */
+    public function streamMCPResource(string $serverName, string $resourceName, array $parameters = []): iterable
+    {
+        if (!$this->mcpManager) {
+            throw new Exception('MCP Manager not initialized');
+        }
+
+        return $this->mcpManager->streamResource($serverName, $resourceName, $parameters);
+    }
+
+    /**
      * Configure and use web search.
      * This method sets up the web search configuration based on the provided context size
      * and location details. It validates the search context size and constructs the search
@@ -1031,7 +1424,6 @@ class Agent
 
         return $this;
     }
-
 
     /**
      * Register function implementations based on input type
@@ -1154,8 +1546,6 @@ class Agent
     }
 
 
-
-
     /**
      * Run a tool with the given arguments.
      *
@@ -1257,6 +1647,49 @@ class Agent
             throw new \RuntimeException("Limit reached for this conversation. Start a new conversation.");
         }
 
+        // Tools Management
+        // 1. Merge tools from options and MCP if active
+        $mergedToolDefs = [];
+
+        // a) Tools already set in options (if any)
+        $existingTools = $this->options->get('tools') ?? [];
+        if (!empty($existingTools)) {
+            // Se asume ya en formato OpenAI (por compatibilidad con otras features)
+            $mergedToolDefs = array_merge($mergedToolDefs, $existingTools);
+        }
+
+        // b) Tools from provided definitions
+        if (!empty($toolDefinitions)) {
+            foreach ($toolDefinitions as $tool) {
+                $mergedToolDefs[] = $this->normalizeToolForOpenAI($tool);
+            }
+        }
+
+        // c) Include MCP tools if enabled
+        if ($this->useMCP && $this->mcpManager) {
+            $mcpTools = $this->mcpManager->getToolDefinitions(); // schemas MCP ya registrados
+            foreach ($mcpTools as $tool) {
+                $mergedToolDefs[] = $this->normalizeToolForOpenAI($tool);
+            }
+        }
+
+        // d) Remove duplicates by name (the last one wins)
+        $seen = [];
+        foreach ($mergedToolDefs as $raw) {
+            // Detectar nombre desde distintos formatos
+            $toolName = $raw['name'] ?? ($raw['function']['name'] ?? null);
+            if (!$toolName) {
+                continue;
+            }
+
+            // Normalizar a formato Responses API: { type: 'function', name, parameters, description? }
+            $normalized = $this->normalizeToolForOpenAI($raw);
+            $seen[$toolName] = $normalized; // sobreescribe duplicados
+        }
+        $finalTools = array_values($seen);
+
+
+
         // Prepare the parameters for the Responses API
         $params = [
             'model' => $this->options->get('model') ?? 'gpt-4o',
@@ -1264,9 +1697,14 @@ class Agent
             'input' => $inputItems,
             'temperature' => $this->options->get('temperature') ?? null,
             'top_p' => $this->options->get('top_p') ?? null,
-            'tools' => $this->options->get('tools') ?? []
+            //'tools' => $this->options->get('tools') ?? []
             //'modalities' => ['text', 'audio'], // request both formats (optional)
         ];
+
+        if (!empty($finalTools)) {
+            $params['tools'] = $finalTools;
+            $params['tool_choice'] = 'auto';
+        }
 
         // Handle output type for structured responses
         $outputType = $outputType ?? $this->outputType;
@@ -1312,7 +1750,7 @@ class Agent
                         $response_content .= $finalResponse;
 
 
-                        continue; // Skip to next output
+                        continue; // Skip to next output if function call was processed
                     }
 
                     // Check if the output has content
@@ -1328,13 +1766,7 @@ class Agent
             }
 
             // Calculate token usage
-            if(isset($response->usage)) {
-                $totalTokenCount = $response->usage->outputTokens ?? 0;
-            } else {
-                $totalTokenCount = 0;
-                Log::warning("[Agent Debug] Responses API response does not contain usage data.");
-            }
-
+            $totalTokenCount = isset($response->usage) ? ($response->usage->outputTokens ?? 0) : 0;
             $this->addTokenUsage($totalTokenCount);
 
             if (!empty($response_content)) {
@@ -1906,6 +2338,7 @@ class Agent
      * @param string $task
      * @param array $context
      * @return mixed
+     * @throws Exception
      */
     public function execute(string $task, array $context = []): mixed
     {
@@ -2275,6 +2708,92 @@ class Agent
 
         return $blocks;
     }
+
+    /**
+     * Normalizes a tool's structure to conform to OpenAI's expected format.
+     *
+     * This method transforms the given tool array into a defined structure compatible
+     * with OpenAI's API expectations, ensuring consistency and validation. It checks
+     * if the provided tool is already in a valid format or reconstructs it with the
+     * required attributes.
+     *
+     * @param array $tool An associative array representing the tool, which may include
+     *                    details such as name, description, schema, or parameters.
+     *
+     * @return array A normalized array formatted as per OpenAI's API specifications,
+     *               containing the 'type' as 'function' and a validated 'function' structure.
+     */
+    private function normalizeToolForOpenAI(array $tool): array
+    {
+        // Si ya está en formato Responses API (type=function y name en tope)
+        if (($tool['type'] ?? null) === 'function' && isset($tool['name'])) {
+            // Asegurar parameters
+            $parameters = $tool['parameters'] ?? ['type' => 'object', 'properties' => new \stdClass()];
+            if (isset($parameters['properties']) && is_array($parameters['properties']) && empty($parameters['properties'])) {
+                $parameters['properties'] = new \stdClass();
+            }
+            $out = [
+                'type' => 'function',
+                'name' => $tool['name'],
+                'parameters' => $parameters,
+            ];
+            if (isset($tool['description'])) {
+                $out['description'] = $tool['description'];
+            }
+            return $out;
+        }
+
+        // Caso Chat-style: { type:function, function:{ name, parameters, description? } }
+        if (($tool['type'] ?? null) === 'function' && isset($tool['function']['name'])) {
+            $name = $tool['function']['name'];
+            $parameters = $tool['function']['parameters'] ?? ['type' => 'object', 'properties' => new \stdClass()];
+            if (isset($parameters['properties']) && is_array($parameters['properties']) && empty($parameters['properties'])) {
+                $parameters['properties'] = new \stdClass();
+            }
+            $out = [
+                'type' => 'function',
+                'name' => $name,
+                'parameters' => $parameters,
+            ];
+            if (isset($tool['function']['description'])) {
+                $out['description'] = $tool['function']['description'];
+            } elseif (isset($tool['description'])) {
+                $out['description'] = $tool['description'];
+            }
+            return $out;
+        }
+
+        // Caso MCP schema genérico: { name, schema{...} | parameters{...}, description? }
+        $name = $tool['name'] ?? 'unknown_function';
+        // Detectar parámetros desde schema típico MCP
+        $parameters = ['type' => 'object', 'properties' => new \stdClass()];
+        if (isset($tool['schema']['schema'])) {
+            $parameters = $tool['schema']['schema'];
+        } elseif (isset($tool['schema']['type'])) {
+            $parameters = $tool['schema'];
+        } elseif (isset($tool['parameters'])) {
+            $parameters = $tool['parameters'];
+        } elseif (isset($tool['schema']) && is_array($tool['schema'])) {
+            $parameters = $tool['schema'];
+        }
+
+        if (isset($parameters['properties']) && is_array($parameters['properties']) && empty($parameters['properties'])) {
+            $parameters['properties'] = new \stdClass();
+        }
+
+        $out = [
+            'type' => 'function',
+            'name' => $name,
+            'parameters' => $parameters,
+        ];
+        if (isset($tool['description'])) {
+            $out['description'] = $tool['description'];
+        } elseif (isset($tool['schema']['description'])) {
+            $out['description'] = $tool['schema']['description'];
+        }
+        return $out;
+    }
+
 
     /**
      * Handles the firing of a response event after processing an API response.

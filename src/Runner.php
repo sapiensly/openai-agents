@@ -32,6 +32,8 @@ use Sapiensly\OpenaiAgents\MCP\MCPTool;
 class Runner
 {
     protected Agent $agent;
+    protected Agent $runnerAgent;
+    protected string $runnerAgentName;
     protected int $maxTurns;
     protected array $tools = [];
     protected array $namedAgents = [];
@@ -111,10 +113,17 @@ class Runner
      * @param Tracing|null $tracer An optional tracer instance for tracing operations.
      * @param mixed|null $outputType An optional output type specification.
      */
-    public function __construct(Agent $agent, int|null $maxTurns = null, Tracing|null $tracer = null, mixed $outputType = null)
+    public function __construct(Agent $agent, string $name, int|null $maxTurns = null, Tracing|null $tracer = null, mixed $outputType = null)
     {
+        // check if name is already registered
+        if (isset($this->namedAgents[$name])) {
+            throw new Exception("Agent with name '{$name}' is already registered.");
+        }
+
+
         $maxTurns ??= 5;
-        $this->agent = $agent;
+        $this->runnerAgent = $this->agent = $agent;
+        $this->runnerAgentName = $name;
         $this->maxTurns = $maxTurns;
         $this->tracer = $tracer;
         $this->outputType = $outputType;
@@ -149,7 +158,13 @@ class Runner
 
             $this->agent = $newAgent;
         }
+
+        // Register the agent with its name
+        $this->registerAgent($name, $this->agent,
+            config('agents.multi_agent.default_runner.use_me_when', 'default runner agent')
+        );
     }
+
 
     /**
      * Registers a tool using the given name and callback.
@@ -503,13 +518,79 @@ class Runner
      *
      * @param string $name The name to associate with the agent.
      * @param Agent $agent The agent instance to register.
+     * @param string $useMeWhen A condition or instruction for when this agent should be used.
      *
      * @return void
      */
-    public function registerAgent(string $name, Agent $agent): void
+    public function registerAgent(string $name, Agent $agent, string $useMeWhen): void
     {
-        $this->namedAgents[$name] = $agent;
+        $this->namedAgents[$name]['agent'] = $agent;
+        $this->namedAgents[$name]['use_me_when'] = $useMeWhen;
+        // Update instructions for the current agent, so it knows about the specialists
+        $this->setMultiAgentInstruction($agent, $useMeWhen);
+        // Finally, update all registered agents' instructions to include the specialists
+        $this->addAgentToAllRegisteredAgentsInstructions($agent, $useMeWhen);
     }
+
+    /**
+     * Updates the instructions for the current agent to include registered specialists.
+     *
+     * This method constructs a section listing all registered agents and their capabilities
+     * and appends it to the agent's existing instructions.
+     */
+    private function setMultiAgentInstruction($agent, string $useMeWhen): void
+    {
+        if (empty($this->namedAgents)) {
+            return;
+        }
+
+        // Get append instructions from config
+        $multiagentInstructions = config('agents.multi_agent.multiagent_instructions', '');
+
+        // Build the updated instructions
+        $addInstructions = $multiagentInstructions . "\n\nAVAILABLE SPECIALISTS:\n";
+        $entry = '';
+
+        foreach ($this->namedAgents as $name => $registeredAgent) {
+            if($agent->getId() !== $registeredAgent['agent']->getId()) {
+                $entry .= "- Transfer to {$name} when or if: {$registeredAgent['use_me_when']}\n";
+            }
+        }
+        $addInstructions.= $entry;
+        $agent->appendInstructions($addInstructions);
+
+    }
+
+    /**
+     * Adds the current agent to all registered agents' instructions.
+     *
+     * This method ensures that all registered agents are aware of the current agent's capabilities
+     * and can reference it in their instructions.
+     */
+    private function addAgentToAllRegisteredAgentsInstructions(Agent $agent, string $useMeWhen): void
+    {
+        if (empty($this->namedAgents)) {
+            return;
+        }
+
+        // Build new agent entry:
+        $entry = '';
+
+        foreach ($this->namedAgents as $name => $registeredAgent) {
+            if($agent->getId() === $registeredAgent['agent']->getId()) {
+                $entry .= "- Transfer to {$name} when or if: {$registeredAgent['use_me_when']}\n";
+            }
+        }
+        if (empty($entry)) {
+            return; // No other agents to add
+        }
+        foreach ($this->namedAgents as $registeredAgent) {
+            if($agent->getId() !== $registeredAgent['agent']->getId()) {
+                $registeredAgent['agent']->appendInstructions($entry);
+            }
+        }
+    }
+
 
     /**
      * Adds an input guardrail to the collection of input guardrails.
@@ -705,16 +786,27 @@ class Runner
 
             // Handoff chaining
             if (preg_match('/\[\[handoff:(.+?)(?:\s+(.+))?]]/', $response, $m)) {
-                $target = trim($m[1]);
+                $targetName = trim($m[1]);
                 $handoffData = isset($m[2]) ? json_decode($m[2], true) : [];
-                Log::info("[Runner Debug] Handoff pattern matched. Target: {$target}, Data: " . json_encode($handoffData));
+                Log::info("[Runner Debug] Handoff pattern matched. Target: {$targetName}, Data: " . json_encode($handoffData));
                 Log::info("[Runner Debug] Available agents: " . implode(', ', array_keys($this->namedAgents)));
+                Log::info("[Runner Debug] Current agent ID: " . ($this->agent->getId() ?? 'unknown'));
+                Log::info("[Runner Debug] Target agent ID: " . isset($this->namedAgents[$targetName]['agent']) ? $this->namedAgents[$targetName]['agent']->getId() : 'not found');
+                Log::info("[Runner Debug] Using Advanced Handoff: " . $this->useAdvancedHandoff);
+
+                if(!isset($this->namedAgents[$targetName]['agent']) && !$this->useAdvancedHandoff) {
+                    Log::error("[Runner Debug] Handoff target agent not found: {$targetName}");
+                    $input = "Sorry, I couldn't transfer you to the requested agent: {$targetName}. Please try again.";
+                    $turn++;
+                    continue;
+                }
+                $targetAgent = $this->namedAgents[$targetName]['agent'];
 
                 if ($this->useAdvancedHandoff && $this->handoffOrchestrator !== null) {
                     Log::info("[Runner Debug] Using advanced handoff implementation");
                     $handoffRequest = new HandoffRequest(
                         sourceAgentId: $this->agent->getId() ?? 'unknown',
-                        targetAgentId: $target,
+                        targetAgentId: $targetAgent->getId() ?? 'unknown',
                         conversationId: $this->conversationId ?? 'conv_' . uniqid(),
                         context: [
                             'messages' => $this->agent->getMessages(),
@@ -729,20 +821,10 @@ class Runner
                         requiredCapabilities: $handoffData['capabilities'] ?? [],
                         fallbackAgentId: $handoffData['fallback'] ?? null
                     );
-                    $result = $this->handoffOrchestrator->handleHandoff($handoffRequest);
+                    $result = $this->handoffOrchestrator->handleHandoff($handoffRequest, $this->agent, $targetAgent);
                     if ($result->isSuccess()) {
                         Log::info("[Runner Debug] Advanced handoff successful to agent: {$result->targetAgentId}");
-                        if (isset($this->namedAgents[$result->targetAgentId])) {
-                            $targetAgent = $this->namedAgents[$result->targetAgentId];
-                            if (method_exists($targetAgent, 'loadContext')) {
-                                $targetAgent->loadContext($result->context);
-                            }
-                            $this->agent = $targetAgent;
-                        } else {
-                            Log::info("[Runner Debug] Creating new agent with system prompt: {$result->targetAgentId}");
-                            $this->agent = new Agent($this->agent->getClient(), [], $result->targetAgentId);
-                            $this->agent->loadContext($result->context);
-                        }
+                        $this->agent = $targetAgent;
                     } else {
                         Log::error("[Runner Debug] Advanced handoff failed: {$result->errorMessage}");
                         $input = "Sorry, I couldn't transfer you to the requested agent. Error: {$result->errorMessage}";
@@ -751,14 +833,14 @@ class Runner
                     }
                 } else {
                     Log::info("[Runner Debug] Using basic handoff implementation");
-                    if (isset($this->namedAgents[$target])) {
-                        Log::info("[Runner Debug] Switching to registered agent: {$target}");
-                        $this->agent = $this->namedAgents[$target];
-                        Log::info("[Runner Debug] Agent switched successfully to: {$target}");
+                    if (isset($this->namedAgents[$targetName]['agent'])) {
+                        Log::info("[Runner Debug] Switching to registered agent: {$targetName}");
+                        $this->agent = $this->namedAgents[$targetName]['agent'];
+                        Log::info("[Runner Debug] Agent switched successfully to: {$targetName}");
                         Log::info("[Runner Debug] New agent ID: " . ($this->agent->getId() ?? 'unknown'));
                     } else {
-                        Log::info("[Runner Debug] Creating new agent with system prompt: {$target}");
-                        $this->agent = new Agent($this->agent->getClient(), [], $target);
+                        Log::info("[Runner Debug] Creating new agent with system prompt: {$targetName}");
+                        $this->agent = new Agent($this->agent->getClient(), [], $targetName);
                     }
                 }
                 // Handoff chaining: always pass the original message to the new agent
@@ -1046,9 +1128,10 @@ class Runner
     {
         return [
             'id' => $this->agent->getId(),
-            'name' => $this->findCurrentAgentName(),
+            'name' => $this->getCurrentAgentName(),
             'model' => $this->agent->getOption('model'),
-            'tools' => $this->agent->getOption('tools'),
+            'instructions' => $this->agent->getOption('instructions'),
+            'tools' => $this->agent->getOption('tools')
         ];
     }
 
@@ -1057,12 +1140,12 @@ class Runner
      *
      * @return string|null The agent name or null if not found
      */
-    private function findCurrentAgentName(): ?string
+    public function getCurrentAgentName(): ?string
     {
         $currentAgentId = $this->agent->getId();
 
-        foreach ($this->getNamedAgents() as $name => $agent) {
-            if ($agent->getId() === $currentAgentId) {
+        foreach ($this->getNamedAgents() as $name => $namedAgent) {
+            if ($namedAgent['agent']->getId() === $currentAgentId) {
                 return $name;
             }
         }

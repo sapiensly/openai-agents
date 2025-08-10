@@ -50,6 +50,31 @@ class AgentManager
     }
 
     /**
+     * Create a new Agent instance for Runner (uses default_runner config).
+     *
+     * @param AgentOptions|array|null $options The configuration options for the Agent. Defaults to `null`.
+     * @param string|null $instructions
+     * @return Agent A new Agent instance with runner configuration.
+     */
+    public function runnerAgent(AgentOptions|array|null $options = null, string|null $instructions = null): Agent
+    {
+        // Convert an array to AgentOptions if needed
+        if (is_array($options) || $options === null) {
+            $options = $options === null ? [] : $options;
+        }
+
+        // Use default_runner configuration instead of default
+        $defaultOptions = AgentOptions::fromArray($this->config['default_runner'] ?? []);
+        $agent_options = $defaultOptions->merge($options);
+
+        // Use runner instructions if no system prompt provided
+        $baseInstructions = $instructions ?? config('agents.multi_agent.default_runner.instructions');
+
+        $client = (new OpenAIFactory())->withApiKey($this->config['api_key'])->make();
+        return new Agent($client, $agent_options, $baseInstructions);
+    }
+
+    /**
      * Create a new Runner instance.
      *
      * This method creates and returns a Runner instance using the provided agent
@@ -60,17 +85,28 @@ class AgentManager
      * @param int|null $maxTurns The maximum number of turns allowed. Defaults to null.
      * @return Runner A new Runner instance.
      */
-    public function runner(Agent|null $agent = null, int|null $maxTurns = null): Runner
+    public function runner(Agent|null $agent = null, string|null $name = null, int|null $maxTurns = null, string|null $instructions = null): Runner
     {
-        $agent ??= $this->agent();
-
+        // Use runnerAgent instead of agent for default creation
+        $agent ??= $this->runnerAgent();
+        $name ??=  config('agents.multi_agent.default_runner.name', 'runner_agent');
+        $baseInstructions = $instructions ?? config('agents.multi_agent.default_runner.instructions');
+        if ($baseInstructions) {
+            $agent->setInstructions($baseInstructions);
+        }
         // Create the runner with the agent and max turns
-        $runner = new Runner(
-            $agent,
-            $maxTurns,
-            App::make(Tracing::class),
-            null
-        );
+        try{
+            $runner = new Runner(
+                $agent,
+                $name,
+                $maxTurns,
+                App::make(Tracing::class),
+                null
+            );
+        }
+        catch (\Exception $e) {
+            throw new \RuntimeException("Failed to create Runner: " . $e->getMessage(), 0, $e);
+        }
 
         // If advanced handoff is enabled, configure the runner with the orchestrator
         if ($this->config['handoff']['advanced'] ?? false) {
