@@ -1591,14 +1591,15 @@ class Agent
      *
      *
      * @param string|null $message
-     * @param array $toolDefinitions
+     * @param array|null $toolDefinitions
      * @param mixed|null $outputType
      * @return string
      * @throws Exception
      */
-    private function chatWithResponsesAPI(string|null $message = null, array $toolDefinitions = [], mixed $outputType = null): string
+    private function chatWithResponsesAPI(string|null $message = null, array|null $toolDefinitions = null, mixed $outputType = null): string
     {
         //Log::info("[Agent Debug] Chat with chatWithResponsesAPI message: {$message}");
+        $toolDefinitions ??= [];
         $startTime = microtime(true);
 
         // Set max turns memory from options or default to 10

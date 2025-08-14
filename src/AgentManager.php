@@ -142,6 +142,7 @@ class AgentManager
      *
      * @param Agent $agent The agent to configure
      * @return Agent The configured agent
+     * @throws \Exception
      */
     public function autoConfigureAgent(Agent $agent): Agent
     {

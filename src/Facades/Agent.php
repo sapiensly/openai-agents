@@ -115,4 +115,5 @@ class Agent extends Facade
     {
         return static::manager()->autoConfigureAgent($agent);
     }
+
 }
