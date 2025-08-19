@@ -4,9 +4,7 @@ declare(strict_types=1);
 namespace Sapiensly\OpenaiAgents;
 
 use Illuminate\Support\ServiceProvider;
-use Sapiensly\OpenaiAgents\Events\AgentResponseGenerated;
 use Sapiensly\OpenaiAgents\Handoff\HandoffOrchestrator;
-use Sapiensly\OpenaiAgents\Listeners\LogAgentAnalytics;
 use Sapiensly\OpenaiAgents\Metrics\MetricsCollector;
 use Sapiensly\OpenaiAgents\Registry\AgentRegistry;
 use Sapiensly\OpenaiAgents\Security\SecurityManager;
@@ -20,8 +18,6 @@ use Sapiensly\OpenaiAgents\Providers\ModelProviderManager;
 use Sapiensly\OpenaiAgents\Lifecycle\AgentLifecycleManager;
 use Sapiensly\OpenaiAgents\Lifecycle\AgentPool;
 use Sapiensly\OpenaiAgents\Lifecycle\HealthChecker;
-use Illuminate\Support\Facades\Event;
-
 // use Sapiensly\OpenaiAgents\Http\HttpServiceProvider;
 
 class AgentServiceProvider extends ServiceProvider
@@ -74,25 +70,9 @@ class AgentServiceProvider extends ServiceProvider
         // Register advanced handoff services
         $this->registerAdvancedHandoffServices();
 
-        // Register analytics event listeners
-        $this->registerLogsListener();
-
-
         // Register HTTP services (test routes, views, etc.)
         // $this->app->register(HttpServiceProvider::class);
     }
-
-    /**
-     * Register analytics event listeners.
-     */
-    private function registerLogsListener(): void
-    {
-        // Check if analytics is enabled in config
-        if (config('agents.logs.enabled', false)) {
-            Event::listen(AgentResponseGenerated::class, LogAgentAnalytics::class);
-        }
-    }
-
 
     /**
      * Register services for lifecycle management.
@@ -148,12 +128,8 @@ class AgentServiceProvider extends ServiceProvider
 
         // Register SecurityManager
         $this->app->singleton(SecurityManager::class, function ($app) {
-            return new SecurityManager(
-                $app->make(AgentRegistry::class), // Primer parámetro: AgentRegistry
-                $app['config']['agents']         // Segundo parámetro: array config
-            );
+            return new SecurityManager($app['config']['agents']);
         });
-
 
         // Register MetricsCollector
         $this->app->singleton(MetricsCollector::class, function ($app) {
@@ -181,9 +157,24 @@ class AgentServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        // Register the persistence provider (bindings + publishables)
+        $this->app->register(PersistenceServiceProvider::class);
+
         $this->publishes([
             __DIR__ . '/../config/agents.php' => config_path('agents.php'),
         ], 'config');
+
+        $this->publishes([
+            __DIR__ . '/../config/agent-persistence.php' => config_path('agent-persistence.php'),
+        ], 'agent-persistence-config');
+
+        $migration = __DIR__ . '/../database/migrations/2024_01_01_000000_create_agent_conversations_tables.php';
+        if (file_exists($migration)) {
+            $this->publishes([
+                $migration => database_path('migrations/2024_01_01_000000_create_agent_conversations_tables.php'),
+            ], 'agent-persistence-migrations');
+        }
+
 
         // Publicar vistas del dashboard de visualización
         $this->publishes([
@@ -198,7 +189,6 @@ class AgentServiceProvider extends ServiceProvider
                 Console\Commands\AgentTinker::class,
                 Console\Commands\LifecycleCommand::class,
                 Console\Commands\ListFilesCommand::class,
-                Console\Commands\OpenAIModelsList::class,
             ]);
         }
 

@@ -8,6 +8,7 @@ use Sapiensly\OpenaiAgents\Agent;
 use Sapiensly\OpenaiAgents\Registry\AgentRegistry;
 use Sapiensly\OpenaiAgents\State\ConversationStateManager;
 use Sapiensly\OpenaiAgents\Security\SecurityManager;
+use Sapiensly\OpenaiAgents\Security\HandoffSecurityException;
 use Sapiensly\OpenaiAgents\Metrics\MetricsCollector;
 use Random\RandomException;
 use Sapiensly\OpenaiAgents\Handoff\ReversibleHandoffManager;
@@ -141,7 +142,7 @@ class HandoffOrchestrator
         $this->metrics = $metrics;
         $this->config = $config;
         $this->tracing = $tracing ?? new TracingManager();
-
+        
         // Initialize validator, fallback strategy, and context analyzer
         $this->validator = new HandoffValidator($registry, $security, $stateManager, $config);
         $this->fallbackStrategy = new FallbackStrategy($registry, $stateManager, $security, $metrics, $config);
@@ -156,13 +157,11 @@ class HandoffOrchestrator
      * Handle a handoff request.
      *
      * @param HandoffRequest $request The handoff request
-     * @param Agent $sourceAgent The source agent initiating the handoff
-     * @param Agent $targetAgent The target agent to hand off to
      * @return HandoffResult The handoff result
      */
-    public function handleHandoff(HandoffRequest $request, Agent $sourceAgent, Agent $targetAgent): HandoffResult
+    public function handleHandoff(HandoffRequest $request): HandoffResult
     {
-        $this->tracing->startSpan('handoff_execution', [
+        $spanId = $this->tracing->startSpan('handoff_execution', [
             'source_agent' => $request->sourceAgentId,
             'target_agent' => $request->targetAgentId,
             'conversation_id' => $request->conversationId,
@@ -171,12 +170,11 @@ class HandoffOrchestrator
 
         try {
             // Validate the handoff request
-            $this->tracing->startSpan('handoff_validation', [
+            $validationSpan = $this->tracing->startSpan('handoff_validation', [
                 'request_id' => uniqid('handoff_', true)
             ]);
 
-
-            $validationResult = $this->validator->validateHandoff($request, $sourceAgent, $targetAgent);
+            $validationResult = $this->validator->validateHandoff($request);
             $this->tracing->endSpan(['valid' => $validationResult->isValid()]);
 
             if (!$validationResult->isValid()) {
@@ -192,14 +190,13 @@ class HandoffOrchestrator
             }
 
             // Check permissions
-            $this->tracing->startSpan('permission_check', [
+            $permissionSpan = $this->tracing->startSpan('permission_check', [
                 'source_agent' => $request->sourceAgentId,
                 'target_agent' => $request->targetAgentId
             ]);
 
-
             try {
-                $this->security->validateHandoffPermission($sourceAgent, $targetAgent);
+                $this->security->validateHandoffPermission($request->sourceAgentId, $request->targetAgentId);
             } catch (HandoffSecurityException $e) {
                 $this->tracing->endSpan(['permitted' => false]);
                 $this->tracing->endSpan(['success' => false, 'error' => 'permission_denied']);
@@ -215,10 +212,22 @@ class HandoffOrchestrator
 
             $this->tracing->endSpan(['permitted' => true]);
 
-
+            // Get the target agent
+            $targetAgent = $this->registry->getAgent($request->targetAgentId);
+            if (!$targetAgent) {
+                $this->tracing->endSpan(['success' => false, 'error' => 'agent_not_found']);
+                $handoffId = uniqid('handoff_', true);
+                return new HandoffResult(
+                    $handoffId,
+                    'failed',
+                    $request->targetAgentId,
+                    "Target agent {$request->targetAgentId} not found",
+                    ['trace_id' => $this->tracing->getTraceId()]
+                );
+            }
 
             // Save handoff state
-            $this->tracing->startSpan('state_save', [
+            $stateSpan = $this->tracing->startSpan('state_save', [
                 'conversation_id' => $request->conversationId
             ]);
 
@@ -252,7 +261,7 @@ class HandoffOrchestrator
         } catch (\Throwable $e) {
             $this->metrics->recordHandoffFailure($request, $e);
             $this->tracing->endSpan(['success' => false, 'error' => $e->getMessage()]);
-
+            
             $handoffId = uniqid('handoff_', true);
             return new HandoffResult(
                 $handoffId,
@@ -305,27 +314,27 @@ class HandoffOrchestrator
      * @return HandoffResult|null The handoff result, or null if no handoff needed
      */
     public function handleIntelligentHandoff(
-        string $userInput,
-        string $currentAgentId,
-        string $conversationId,
-        array $context = [],
+        string $userInput, 
+        string $currentAgentId, 
+        string $conversationId, 
+        array $context = [], 
         float $confidenceThreshold = 0.7
     ): ?HandoffResult {
         // Get suggestion from context analyzer
         $suggestion = $this->suggestHandoff($userInput, $currentAgentId, $conversationId, $context);
-
+        
         if (!$suggestion) {
             return null;
         }
-
+        
         // Check if confidence meets threshold
         if ($suggestion->confidence < $confidenceThreshold) {
             return null;
         }
-
+        
         // Convert suggestion to handoff request
         $request = $suggestion->toHandoffRequest($currentAgentId, $conversationId, $context);
-
+        
         // Handle the handoff
         return $this->handleHandoff($request);
     }
@@ -342,10 +351,10 @@ class HandoffOrchestrator
      * @return HandoffResult|null The handoff result, or null if no handoff needed
      */
     public function handleHybridHandoff(
-        string $userInput,
-        string $currentAgentId,
-        string $conversationId,
-        array $context = [],
+        string $userInput, 
+        string $currentAgentId, 
+        string $conversationId, 
+        array $context = [], 
         float $confidenceThreshold = 0.7
     ): ?HandoffResult {
         // Step 1: Try intelligent handoff first
@@ -355,7 +364,7 @@ class HandoffOrchestrator
                 return $intelligentResult;
             }
         }
-
+        
         // Step 2: If intelligent handoff didn't work, let the agent decide manually
         // This will be handled by the agent's response parsing
         return null;
@@ -588,10 +597,10 @@ class HandoffOrchestrator
     /**
      * Get all active async handoff jobs.
      *
-     * @param string|null $conversationId The conversation ID (optional)
+     * @param string $conversationId The conversation ID (optional)
      * @return array Array of active jobs
      */
-    public function getActiveAsyncHandoffs(string|null $conversationId = null): array
+    public function getActiveAsyncHandoffs(string $conversationId = null): array
     {
         return $this->asyncHandoffManager->getActiveAsyncHandoffs($conversationId);
     }
@@ -625,15 +634,4 @@ class HandoffOrchestrator
     {
         return $this->tracing;
     }
-
-    /**
-     * Get the agent registry.
-     *
-     * @return AgentRegistry The agent registry
-     */
-    public function getRegistry(): AgentRegistry
-    {
-        return $this->registry;
-    }
-
 }

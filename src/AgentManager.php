@@ -4,8 +4,9 @@ declare(strict_types=1);
 namespace Sapiensly\OpenaiAgents;
 
 use Illuminate\Support\Facades\App;
-use OpenAI\Factory as OpenAIFactory;
+use OpenAI\Factory;
 use Sapiensly\OpenaiAgents\Handoff\HandoffOrchestrator;
+use Sapiensly\OpenaiAgents\Tests\MockOpenAI;
 use Sapiensly\OpenaiAgents\Tracing\Tracing;
 
 class AgentManager
@@ -30,48 +31,56 @@ class AgentManager
      * and system prompt. It checks for the usage of a mock OpenAI class in a test
      * environment, otherwise defaults to creating a Factory-based client.
      *
-     * @param AgentOptions|array|null $options The configuration options for the Agent. Defaults to `null`.
+     * @param array|null $options The configuration options for the Agent. Defaults to `null`.
      * @param string|null $systemPrompt The system prompt to initialize the Agent. Defaults to `null`.
      * @return Agent A new Agent instance.
      */
-    public function agent(AgentOptions|array|null $options = null, string|null $systemPrompt = null): Agent
+    public function agent(array|null $options = null, string|null $systemPrompt = null): Agent
     {
-        // Convert an array to AgentOptions if needed
-        if (is_array($options) || $options === null) {
-            $options = $options === null ? [] : $options;
+        $options ??= [];
+        $options = array_replace_recursive($this->config['default'] ?? [], $options);
+
+        // Check if we're in a test environment using the mock class
+        if (class_exists(MockOpenAI::class) &&
+            MockOpenAI::$factory !== null) {
+            $client = MockOpenAI::factory()->withApiKey($this->config['api_key'])->make();
+        } else {
+            $client = (new Factory())->withApiKey($this->config['api_key'])->make();
         }
 
-        $defaultOptions = AgentOptions::fromArray($this->config['default'] ?? []);
-        $agent_options = $defaultOptions->merge($options);
-
-
-        $client = (new OpenAIFactory())->withApiKey($this->config['api_key'])->make();
-        return new Agent($client, $agent_options, $systemPrompt);
+        return new Agent($client, $options, $systemPrompt);
     }
 
     /**
-     * Create a new Agent instance for Runner (uses default_runner config).
-     *
-     * @param AgentOptions|array|null $options The configuration options for the Agent. Defaults to `null`.
-     * @param string|null $instructions
-     * @return Agent A new Agent instance with runner configuration.
+     * Create a persistent agent with conversation support (opt-in).
      */
-    public function runnerAgent(AgentOptions|array|null $options = null, string|null $instructions = null): Agent
+    public function persistent(?string $conversationId = null, array|null $options = null): Agent
     {
-        // Convert an array to AgentOptions if needed
-        if (is_array($options) || $options === null) {
-            $options = $options === null ? [] : $options;
+        $agent = $this->agent($options);
+        if (method_exists($agent, 'withConversation')) {
+            $agent->withConversation($conversationId);
         }
+        return $agent;
+    }
 
-        // Use default_runner configuration instead of default
-        $defaultOptions = AgentOptions::fromArray($this->config['default_runner'] ?? []);
-        $agent_options = $defaultOptions->merge($options);
 
-        // Use runner instructions if no system prompt provided
-        $baseInstructions = $instructions ?? config('agents.multi_agent.default_runner.instructions');
+    /**
+     * Continue an existing persistent conversation.
+     */
+    public function continueConversation(string $conversationId, array|null $options = null): Agent
+    {
+        if (empty($conversationId)) {
+            throw new \InvalidArgumentException('Conversation ID is required to continue a conversation');
+        }
+        return $this->persistent($conversationId, $options);
+    }
 
-        $client = (new OpenAIFactory())->withApiKey($this->config['api_key'])->make();
-        return new Agent($client, $agent_options, $baseInstructions);
+    /**
+     * Start a new persistent conversation.
+     */
+    public function newConversation(array|null $options = null): Agent
+    {
+        return $this->persistent(null, $options);
     }
 
     /**
@@ -85,28 +94,17 @@ class AgentManager
      * @param int|null $maxTurns The maximum number of turns allowed. Defaults to null.
      * @return Runner A new Runner instance.
      */
-    public function runner(Agent|null $agent = null, string|null $name = null, int|null $maxTurns = null, string|null $instructions = null): Runner
+    public function runner(Agent|null $agent = null, int|null $maxTurns = null): Runner
     {
-        // Use runnerAgent instead of agent for default creation
-        $agent ??= $this->runnerAgent();
-        $name ??=  config('agents.multi_agent.default_runner.name', 'runner_agent');
-        $baseInstructions = $instructions ?? config('agents.multi_agent.default_runner.instructions');
-        if ($baseInstructions) {
-            $agent->setInstructions($baseInstructions);
-        }
+        $agent ??= $this->agent();
+
         // Create the runner with the agent and max turns
-        try{
-            $runner = new Runner(
-                $agent,
-                $name,
-                $maxTurns,
-                App::make(Tracing::class),
-                null
-            );
-        }
-        catch (\Exception $e) {
-            throw new \RuntimeException("Failed to create Runner: " . $e->getMessage(), 0, $e);
-        }
+        $runner = new Runner(
+            $agent,
+            $maxTurns,
+            App::make(Tracing::class),
+            null
+        );
 
         // If advanced handoff is enabled, configure the runner with the orchestrator
         if ($this->config['handoff']['advanced'] ?? false) {
@@ -142,7 +140,6 @@ class AgentManager
      *
      * @param Agent $agent The agent to configure
      * @return Agent The configured agent
-     * @throws \Exception
      */
     public function autoConfigureAgent(Agent $agent): Agent
     {

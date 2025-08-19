@@ -14,9 +14,3 @@ yarn-debug.log*
 yarn-error.log*
 .DS_Store
 Thumbs.db
-.phpunit.result.cache
-/Homestead.json
-/Homestead.yaml
-/auth.json
-/composer.lock
-/package-lock.json

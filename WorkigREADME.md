@@ -53,9 +53,6 @@ Set a custom limit for the message history:
 ```php
 $agent->setMaxTurns(5); // Limit history to 5 user messages, default is 10 (set in config/agents.php)
 ```
-NOTE: The message history of a conversation is stored in memory (RAM) within each instance of the Agent class. This history is not automatically persisted to any database and remains in memory only while the agent instance is active.
-If you need to persist the history, you should implement your own logic to save and retrieve the messages using the methods provided by the Agent class.
-
 Use getMessages() to retrieve the current conversation's message history:
 ```php
 $messages = $agent->getMessages();
@@ -66,6 +63,18 @@ $agent->setMaxInputTokens(1000); // Limit input tokens to 1000, default is 4096 
 $agent->setMaxConversationTokens(5000); // Limit total conversation tokens to 5000, default is 10,000 (set in config/agents.php)
 // Check current token usage
 $tokenUsage = $agent->getTokenUsage();
+```
+**IMPORTANT:** By default, agents are stateless and keep message history only in memory within the PHP process. No database or cache is used unless you explicitly enable persistence per agent. This preserves current behavior for all existing code.
+```php
+// 1) Create an agent and opt-in to persistence
+$agent = Agent::agent()->withConversation(); // This will create a new conversation with a unique ID, or use the shortcut
+// 2) Use as usual
+$response = $agent->chat('Hello, my name is John');
+// 3) Get the conversation id to resume later
+$conversationId = $agent->getConversationId();
+// if persistence is enabled, you will be able to continue the conversation later (e.g., in a different request)
+$agent = Agent::agent()->withConversation($conversationId);
+$response = $agent->chat('What did I say previously?');
 ```
 
 

@@ -68,19 +68,36 @@ class OpenAIProvider implements ModelProviderInterface
      */
     public function getAvailableModels(): array
     {
-        $model_list_array = $this->client->models()->list()->data;
-        $model_list_collection = collect($model_list_array);
-        $model_list = $model_list_collection->reduce(function ($models, $model) {;
-            $models[$model->id] = [
-                'id' => $model->id,
-                'object' => $model->object ?? null,
-                'created' => isset($model->created) ? date('Y-m-d H:i:s', $model->created) : null,
-                'owned_by' => $model->ownedBy ?? null,
-            ];
-            return $models;
-        }, []);
-        // order models by creation date new to old
-        return collect($model_list)->sortByDesc('created')->toArray();
+        return [
+            'gpt-4o' => [
+                'name' => 'GPT-4o',
+                'type' => 'chat',
+                'max_tokens' => 128000,
+                'supports_streaming' => true,
+            ],
+            'gpt-4o-mini' => [
+                'name' => 'GPT-4o Mini',
+                'type' => 'chat',
+                'max_tokens' => 128000,
+                'supports_streaming' => true,
+            ],
+            'gpt-3.5-turbo' => [
+                'name' => 'GPT-3.5 Turbo',
+                'type' => 'chat',
+                'max_tokens' => 16385,
+                'supports_streaming' => true,
+            ],
+            'whisper-1' => [
+                'name' => 'Whisper',
+                'type' => 'audio',
+                'supports_streaming' => false,
+            ],
+            'tts-1' => [
+                'name' => 'Text-to-Speech',
+                'type' => 'audio',
+                'supports_streaming' => false,
+            ],
+        ];
     }
 
     /**
@@ -95,9 +112,10 @@ class OpenAIProvider implements ModelProviderInterface
     /**
      * {@inheritdoc}
      */
-    public function getModelInfo(string $model): array
+    public function getModelInfo(string $model): ?array
     {
-        return $this->client->models()->retrieve($model)->toArray();
+        $availableModels = $this->getAvailableModels();
+        return $availableModels[$model] ?? null;
     }
 
     /**
@@ -256,4 +274,4 @@ class OpenAIProvider implements ModelProviderInterface
     {
         return $this->stats;
     }
-}
+} 

@@ -39,15 +39,15 @@ class AsyncHandoffManager
     {
         $job = new AsyncHandoffJob($request, $options);
         $jobId = Queue::push($job);
-
+        
         // Convert job ID to string if it's an integer
         $jobIdString = (string) $jobId;
-
+        
         Log::info("[AsyncHandoffManager] Dispatched async handoff job: {$jobIdString}");
-
+        
         // Store job metadata for tracking
         $this->storeJobMetadata($jobIdString, $request, $options);
-
+        
         return $jobIdString;
     }
 
@@ -60,7 +60,7 @@ class AsyncHandoffManager
     public function getAsyncHandoffStatus(string $jobId): array
     {
         $metadata = Cache::get("async_handoff:{$jobId}");
-
+        
         if (!$metadata) {
             return [
                 'status' => 'not_found',
@@ -87,7 +87,7 @@ class AsyncHandoffManager
     public function cancelAsyncHandoff(string $jobId): bool
     {
         $metadata = Cache::get("async_handoff:{$jobId}");
-
+        
         if (!$metadata) {
             return false;
         }
@@ -95,34 +95,34 @@ class AsyncHandoffManager
         // Update status to cancelled
         $metadata['status'] = 'cancelled';
         $metadata['updated_at'] = now();
-
+        
         Cache::put("async_handoff:{$jobId}", $metadata, 3600);
-
+        
         Log::info("[AsyncHandoffManager] Cancelled async handoff job: {$jobId}");
-
+        
         return true;
     }
 
     /**
      * Get all active async handoff jobs.
      *
-     * @param string|null $conversationId The conversation ID (optional)
+     * @param string $conversationId The conversation ID (optional)
      * @return array Array of active jobs
      */
-    public function getActiveAsyncHandoffs(string|null $conversationId = null): array
+    public function getActiveAsyncHandoffs(string $conversationId = null): array
     {
         // This is a simplified implementation
         // In a real implementation, you might query a database table
         $activeJobs = [];
-
+        
         // Simulate getting active jobs from cache
         $patterns = ['async_handoff:*'];
-
+        
         foreach ($patterns as $pattern) {
             // This would typically use Redis SCAN or similar
             Log::info("[AsyncHandoffManager] Getting active jobs for pattern: {$pattern}");
         }
-
+        
         return $activeJobs;
     }
 
@@ -150,7 +150,7 @@ class AsyncHandoffManager
             'created_at' => now(),
             'updated_at' => now()
         ];
-
+        
         Cache::put("async_handoff:{$jobId}", $metadata, 3600);
     }
 
@@ -165,23 +165,23 @@ class AsyncHandoffManager
     public function updateJobStatus(string $jobId, string $status, array $data = []): void
     {
         $metadata = Cache::get("async_handoff:{$jobId}");
-
+        
         if ($metadata) {
             $metadata['status'] = $status;
             $metadata['updated_at'] = now();
-
+            
             if (isset($data['progress'])) {
                 $metadata['progress'] = $data['progress'];
             }
-
+            
             if (isset($data['result'])) {
                 $metadata['result'] = $data['result'];
             }
-
+            
             if (isset($data['error'])) {
                 $metadata['error'] = $data['error'];
             }
-
+            
             Cache::put("async_handoff:{$jobId}", $metadata, 3600);
         }
     }
@@ -246,16 +246,16 @@ class AsyncHandoffJob implements ShouldQueue
     public function handle(): void
     {
         $jobId = (string) $this->job->getJobId();
-
+        
         Log::info("[AsyncHandoffJob] Starting async handoff job: {$jobId}");
-
+        
         try {
             // Update status to processing
             $this->updateStatus($jobId, 'processing', ['progress' => 10]);
-
+            
             // Simulate handoff processing steps
             $this->processHandoffSteps($jobId);
-
+            
             // Update status to completed
             $this->updateStatus($jobId, 'completed', [
                 'progress' => 100,
@@ -265,19 +265,19 @@ class AsyncHandoffJob implements ShouldQueue
                     'handoff_id' => 'ho_' . uniqid()
                 ]
             ]);
-
+            
             Log::info("[AsyncHandoffJob] Completed async handoff job: {$jobId}");
-
+            
         } catch (\Throwable $e) {
             Log::error("[AsyncHandoffJob] Failed async handoff job: {$jobId}", [
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString()
             ]);
-
+            
             $this->updateStatus($jobId, 'failed', [
                 'error' => $e->getMessage()
             ]);
-
+            
             throw $e;
         }
     }
@@ -297,13 +297,13 @@ class AsyncHandoffJob implements ShouldQueue
             'executing_handoff' => 80,
             'finalizing' => 100
         ];
-
+        
         foreach ($steps as $step => $progress) {
             // Simulate processing time
             sleep(1);
-
+            
             $this->updateStatus($jobId, 'processing', ['progress' => $progress]);
-
+            
             Log::info("[AsyncHandoffJob] Completed step: {$step} for job: {$jobId}");
         }
     }
@@ -319,15 +319,15 @@ class AsyncHandoffJob implements ShouldQueue
     private function updateStatus(string $jobId, string $status, array $data = []): void
     {
         $metadata = Cache::get("async_handoff:{$jobId}");
-
+        
         if ($metadata) {
             $metadata['status'] = $status;
             $metadata['updated_at'] = now();
-
+            
             foreach ($data as $key => $value) {
                 $metadata[$key] = $value;
             }
-
+            
             Cache::put("async_handoff:{$jobId}", $metadata, 3600);
         }
     }
@@ -341,14 +341,14 @@ class AsyncHandoffJob implements ShouldQueue
     public function failed(\Throwable $exception): void
     {
         $jobId = (string) $this->job->getJobId();
-
+        
         Log::error("[AsyncHandoffJob] Job failed: {$jobId}", [
             'error' => $exception->getMessage(),
             'trace' => $exception->getTraceAsString()
         ]);
-
+        
         $this->updateStatus($jobId, 'failed', [
             'error' => $exception->getMessage()
         ]);
     }
-}
+} 

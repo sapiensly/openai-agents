@@ -1,25 +1,22 @@
 <?php
-declare(strict_types=1);
+//declare(strict_types=1);
 
 namespace Sapiensly\OpenaiAgents;
 
+use Sapiensly\OpenaiAgents\Events\AgentResponseGenerated;
+use Sapiensly\OpenaiAgents\Persistence\PersistentAgentTrait;
+
 use Exception;
 use Illuminate\Support\Facades\Log;
-use InvalidArgumentException;
+use Illuminate\Support\Str;
 use OpenAI\Client;
 use Random\RandomException;
-use ReflectionException;
-use Sapiensly\OpenaiAgents\Events\AgentResponseGenerated;
-use Sapiensly\OpenaiAgents\MCP\MCPManager;
-use Sapiensly\OpenaiAgents\MCP\MCPServer;
-use Sapiensly\OpenaiAgents\MCP\MCPTool;
 use Sapiensly\OpenaiAgents\Tools\ToolCacheManager;
-use Sapiensly\OpenaiAgents\Tools\VectorStoreTool;
-use Sapiensly\OpenaiAgents\Traits\FunctionSchemaGenerator;
+use Sapiensly\OpenaiAgents\Persistence\Contracts\AgentDefinitionStore;
 
 class Agent
 {
-    use FunctionSchemaGenerator;
+    use PersistentAgentTrait;
 
     /**
      * The OpenAI client instance.
@@ -200,8 +197,43 @@ class Agent
      */
     public function getMessages(): array
     {
+        if (empty($this->messages)) {
+            $this->hydrateMessagesFromPersistenceIfEmpty();
+        }
+
         return $this->messages;
     }
+    /**
+     * Hydrate messages from persistence if the in-memory messages are empty.
+     *
+     * This method checks if there are any messages already loaded in memory.
+     * If not, it retrieves the conversation history from the persistence store
+     * and populates the in-memory messages array.
+     */
+    private function hydrateMessagesFromPersistenceIfEmpty(): void
+    {
+        if (!empty($this->messages)) {
+            return;
+        }
+
+        if (empty($this->conversationId ?? null)) {
+            return;
+        }
+
+        $history = $this->getPersistedHistory();
+
+        if (empty($history)) {
+            return;
+        }
+
+        $this->messages = array_map(static function (array $m): array {
+            return [
+                'role'    => $m['role'] ?? 'user',
+                'content' => $m['content'] ?? '',
+            ];
+        }, $history);
+    }
+
 
     /**
      * Set the agent's message history.
@@ -1576,11 +1608,26 @@ class Agent
      */
     public function chat(string $message, array|null $toolDefinitions = null, mixed $outputType = null): string
     {
-        $toolDefinitions ??= [];
+        // Persist user message if enabled
+        if (property_exists($this, 'persistenceEnabled') && $this->persistenceEnabled === true && method_exists($this, 'persistMessage')) {
+            $this->persistMessage('user', $message);
+        }
 
+        // Keep in-memory behavior
         $this->messages[] = ['role' => 'user', 'content' => $message];
 
-        return $this->chatWithResponsesAPI($message, $toolDefinitions, $outputType);
+        // Call existing logic
+        $response = $this->chatWithResponsesAPI($message, $toolDefinitions, $outputType);
+
+        // Persist assistant response if enabled
+        if (property_exists($this, 'persistenceEnabled') && $this->persistenceEnabled === true && method_exists($this, 'persistMessage')) {
+            $this->persistMessage('assistant', $response, [
+                'token_count' => method_exists($this, 'getTokenUsage') ? $this->getTokenUsage() : null,
+                'model' => $this->options->get('model') ?? null,
+            ]);
+        }
+
+        return $response;
     }
 
     /**
@@ -2824,6 +2871,8 @@ class Agent
             'estimated_total_token_usage' => $totalTokenUsage,
             'timestamp' => now()->toISOString(),
             'api_method' => $api_method,
+            'conversation_id' => method_exists($this, 'getConversationId') ? $this->getConversationId() : null,
+            'persistence_enabled' => property_exists($this, 'persistenceEnabled') ? (bool) $this->persistenceEnabled : false,
             'success' => true,
         ];
 
@@ -2854,6 +2903,8 @@ class Agent
             'error_type' => get_class($exception),
             'timestamp' => now()->toISOString(),
             'api_method' => 'responses',
+            'conversation_id' => method_exists($this, 'getConversationId') ? $this->getConversationId() : null,
+            'persistence_enabled' => property_exists($this, 'persistenceEnabled') ? (bool) $this->persistenceEnabled : false,
             'success' => false,
         ];
 
@@ -2865,4 +2916,143 @@ class Agent
         ));
     }
 
+    /**
+     * Persist the current agent definition (options + tool registrations) using the configured store.
+     */
+    public function persistDefinition(): self
+    {
+        try {
+            $store = app()->bound(\Sapiensly\OpenaiAgents\Persistence\Contracts\AgentDefinitionStore::class)
+                ? app(\Sapiensly\OpenaiAgents\Persistence\Contracts\AgentDefinitionStore::class)
+                : null;
+        } catch (\Throwable $e) {
+            $store = null;
+        }
+
+        if ($store === null) {
+            return $this; // Safe no-op when no store is bound
+        }
+
+        $id = $this->getId() ?? (string) Str::uuid();
+        if ($this->getId() === null) {
+            $this->setId($id);
+        }
+
+        $options = $this->getOptions() ?? [];
+        $tools = $options['tools'] ?? [];
+
+        // Extract function schemas already registered as tools
+        $functionSchemas = array_values(array_filter($tools, fn($t) => ($t['type'] ?? null) === 'function'));
+
+        // Extract web search config if present
+        $webSearch = null;
+        foreach ($tools as $t) {
+            if (($t['type'] ?? null) === 'web_search_preview') {
+                $webSearch = [
+                    'enabled' => true,
+                    'search_context_size' => $t['search_context_size'] ?? null,
+                    'country' => $t['user_location']['country'] ?? null,
+                    'city' => $t['user_location']['city'] ?? null,
+                ];
+                break;
+            }
+        }
+
+        // RAG config is tracked separately
+        $rag = $this->ragConfig ?? null;
+
+        // MCP servers (minimal)
+        $mcp = null;
+        if ($this->mcpManager) {
+            $arr = $this->mcpManager->toArray();
+            $mcp = [
+                'servers' => array_values($arr['servers'] ?? []),
+            ];
+        }
+
+        $definition = [
+            'id' => $id,
+            'options' => $options,
+            'tools' => [
+                'rag' => $rag,
+                'functions' => $functionSchemas,
+                'web_search' => $webSearch,
+                'mcp' => $mcp,
+            ],
+        ];
+
+        $store->save($id, $definition);
+        return $this;
+    }
+
+    /**
+     * Recreate an Agent from a persisted definition.
+     */
+    public static function fromDefinition(array $def): self
+    {
+        $options = $def['options'] ?? [];
+        $agent = \Sapiensly\OpenaiAgents\Facades\Agent::agent($options);
+        if (!empty($def['id'])) {
+            $agent->setId($def['id']);
+        }
+
+        // RAG
+        $rag = $def['tools']['rag'] ?? null;
+        if (is_array($rag) && !empty($rag)) {
+            try {
+                $stores = $rag['vector_store_ids'] ?? ($rag['stores'] ?? []);
+                if (!empty($stores)) {
+                    $agent->useRAG($stores, $rag['max_num_results'] ?? null);
+                }
+            } catch (\Throwable $e) {
+                // Ignore RAG restore errors to keep BC
+            }
+        }
+
+        // Functions (schemas)
+        $fnSchemas = $def['tools']['functions'] ?? [];
+        if (!empty($fnSchemas)) {
+            try {
+                $agent->useFunctions($fnSchemas);
+            } catch (\Throwable $e) {
+                // Ignore function restore errors
+            }
+        }
+
+        // Web Search
+        $ws = $def['tools']['web_search'] ?? null;
+        if (is_array($ws) && ($ws['enabled'] ?? false)) {
+            try {
+                $agent->useWebSearch($ws['search_context_size'] ?? null, $ws['country'] ?? null, $ws['city'] ?? null);
+            } catch (\Throwable $e) {
+                // Ignore
+            }
+        }
+
+        // MCP servers
+        $mcp = $def['tools']['mcp'] ?? null;
+        if (is_array($mcp) && !empty($mcp['servers'])) {
+            foreach ($mcp['servers'] as $srv) {
+                try {
+                    if (!empty($srv['name']) && !empty($srv['url'])) {
+                        $config = [];
+                        if (!empty($srv['transport'])) {
+                            $config['transport'] = $srv['transport'];
+                        }
+                        $agent->useMCPServer([
+                            'name' => $srv['name'],
+                            'url' => $srv['url'],
+                            'config' => $config,
+                        ]);
+                    }
+                } catch (\Throwable $e) {
+                    // Ignore individual server restore issues
+                }
+            }
+        }
+
+        return $agent;
+    }
+
 }
+

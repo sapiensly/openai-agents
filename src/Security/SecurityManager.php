@@ -4,310 +4,173 @@ declare(strict_types=1);
 namespace Sapiensly\OpenaiAgents\Security;
 
 use Sapiensly\OpenaiAgents\Handoff\HandoffSecurityException;
-use Sapiensly\OpenaiAgents\Registry\AgentRegistry;
-use Sapiensly\OpenaiAgents\Agent;
-use Sapiensly\OpenaiAgents\AgentOptions;
-use Illuminate\Support\Facades\Log;
 
 /**
  * Class SecurityManager
  *
- * Manages security policies using simplified array-based permissions with Agent objects.
+ * Manages security aspects of agent handoffs, including permission validation
+ * and context data sanitization.
  */
 class SecurityManager
 {
-    private AgentRegistry $registry;
-    private array $config;
+    /**
+     * Permission matrix defining which agents can hand off to which other agents.
+     * Format: ['source_agent_id' => ['target_agent_id1', 'target_agent_id2', ...]]
+     * Special value '*' means the agent can hand off to any other agent.
+     *
+     * @var array<string, array<string>>
+     */
+    private array $permissionMatrix = [];
 
-    public function __construct(AgentRegistry $registry, array $config = [])
+    /**
+     * List of sensitive keys that should be redacted in context data.
+     *
+     * @var array<string>
+     */
+    private array $sensitiveKeys = [];
+
+    /**
+     * Create a new SecurityManager instance.
+     *
+     * @param array $config Configuration array
+     */
+    public function __construct(array $config)
     {
-        $this->registry = $registry;
-        $this->config = $config;
+        $this->permissionMatrix = $config['handoff']['permissions'] ?? [];
+        $this->sensitiveKeys = $config['handoff']['sensitive_keys'] ?? [
+            'password', 'token', 'secret', 'key', 'credential', 'ssn', 'credit_card'
+        ];
     }
 
     /**
-     * Validate handoff permission using Agent objects.
+     * Validate that a source agent has permission to hand off to a target agent.
      *
-     * @param Agent $sourceAgent The agent requesting handoff
-     * @param Agent $targetAgent The agent receiving handoff
-     * @throws HandoffSecurityException
+     * @param string $sourceAgentId The ID of the source agent
+     * @param string $targetAgentId The ID of the target agent
+     * @return void
+     * @throws HandoffSecurityException If the source agent does not have permission
      */
-    public function validateHandoffPermission(Agent $sourceAgent, Agent $targetAgent): void
+    public function validateHandoffPermission(string $sourceAgentId, string $targetAgentId): void
     {
-        $sourceId = $sourceAgent->getId() ?? 'unknown_source';
-        $targetId = $targetAgent->getId() ?? 'unknown_target';
-
-        Log::debug('[SecurityManager] Validating handoff permission (Agent objects)', [
-            'source_id' => $sourceId,
-            'target_id' => $targetId,
-            'source_capabilities' => $this->getAgentCapabilities($sourceAgent),
-            'target_capabilities' => $this->getAgentCapabilities($targetAgent),
-        ]);
-
-        if (!$this->canReceiveFrom($targetAgent, $sourceAgent)) {
+        if (!$this->hasPermission($sourceAgentId, $targetAgentId)) {
             throw new HandoffSecurityException(
-                "Agent '{$targetId}' does not accept handoffs from '{$sourceId}'"
+                "Agent {$sourceAgentId} does not have permission to hand off to {$targetAgentId}"
             );
         }
     }
 
     /**
-     * Check if target agent can receive handoff from source agent.
+     * Sanitize context data by redacting sensitive information.
+     *
+     * @param array $context The context data to sanitize
+     * @return array The sanitized context data
      */
-    private function canReceiveFrom(Agent $targetAgent, Agent $sourceAgent): bool
+    public function sanitizeContext(array $context): array
     {
-        // 1. First check AgentOptions for target agent
-        // This allows for dynamic configuration per agent
-        // and is the preferred method for defining handoff permissions.
-        Log::debug('[SecurityManager] Checking AgentOptions for target agent', [
-            'target_id' => $targetAgent->getId(),
-            'source_id' => $sourceAgent->getId()
-        ]);
-        $targetOptions = $this->getAgentOptions($targetAgent);
-        // Log
-        Log::debug('[SecurityManager] Checking AgentOptions for target agent', [
-            'target_id' => $targetAgent->getId(),
-            'handoff_target_permission' => $targetOptions->handoff_target_permission ?? null
-        ]);
-        if ($targetOptions && $targetOptions->handoff_target_permission !== null) {
-            return $this->checkPermissionArray(
-                $targetOptions->handoff_target_permission,
-                $sourceAgent
-            );
-        }
-
-        // 2. If no AgentOptions, check agent-specific configuration
-        Log::debug('[SecurityManager] Checking agent-specific configuration', [
-            'target_id' => $targetAgent->getId(),
-            'source_id' => $sourceAgent->getId()
-        ]);
-        // This allows for static configuration per agent in the system config.
-        // It is useful for defining permissions that are not dynamic.
-        $targetId = $targetAgent->getId();
-        $agentSpecificConfig = $this->config['security']['agent_specific'][$targetId] ?? null;
-        if ($agentSpecificConfig) {
-            return $this->checkPermissionArray($agentSpecificConfig, $sourceAgent);
-        }
-
-        // 3. Usar configuración por defecto del sistema
-        Log::debug('[SecurityManager] Using default target permission configuration', [
-            'target_id' => $targetAgent->getId(),
-            'source_id' => $sourceAgent->getId()
-        ]);
-        // This is the fallback for when no specific configuration is found.
-        // It allows for a default permission set that applies to all agents.
-        // It is useful for defining a baseline permission that applies to all agents.
-        $defaultPermission = $this->config['security']['default_target_permission'] ?? ['*'];
-        return $this->checkPermissionArray($defaultPermission, $sourceAgent);
+        return $this->recursiveSanitize($context, $this->sensitiveKeys);
     }
 
     /**
-     * Check permissions using the simplified array format with Agent object.
+     * Check if a source agent has permission to hand off to a target agent.
      *
-     * Examples:
-     * ['*'] = allow all
-     * ['agent_id_1', 'agent_id_2'] = only these agents
-     * ['*', 'blacklist' => ['bad_*']] = all except blacklisted
-     * [] = deny all
-     *
-     * @param array $permission Permission configuration
-     * @param Agent $sourceAgent Source agent object
-     * @return bool
+     * @param string $sourceAgentId The ID of the source agent
+     * @param string $targetAgentId The ID of the target agent
+     * @return bool True if the source agent has permission, false otherwise
      */
-    private function checkPermissionArray(array $permission, Agent $sourceAgent): bool
+    private function hasPermission(string $sourceAgentId, string $targetAgentId): bool
     {
-        // Empty array = deny all
-        if (empty($permission)) {
-            Log::debug('[SecurityManager] Empty permission array, denying access');
+        // If the source agent has global permission, allow
+        if (isset($this->permissionMatrix[$sourceAgentId]) &&
+            in_array('*', $this->permissionMatrix[$sourceAgentId])) {
+            return true;
+        }
+
+        // Check for specific permission
+        return isset($this->permissionMatrix[$sourceAgentId]) &&
+            in_array($targetAgentId, $this->permissionMatrix[$sourceAgentId]);
+    }
+
+    /**
+     * Recursively sanitize an array by redacting sensitive information.
+     *
+     * @param array $data The data to sanitize
+     * @param array $sensitiveKeys List of sensitive keys to redact
+     * @return array The sanitized data
+     */
+    private function recursiveSanitize(array $data, array $sensitiveKeys): array
+    {
+        foreach ($data as $key => $value) {
+            // If the key is sensitive, redact the value
+            if ($this->isSensitiveKey($key, $sensitiveKeys)) {
+                $data[$key] = '[REDACTED]';
+            }
+            // If the value is an array, recursively sanitize it
+            elseif (is_array($value)) {
+                $data[$key] = $this->recursiveSanitize($value, $sensitiveKeys);
+            }
+        }
+
+        return $data;
+    }
+
+    /**
+     * Check if a key is sensitive and should be redacted.
+     *
+     * ✅ FIXED: Now accepts both string and int keys
+     *
+     * @param string|int $key The key to check
+     * @param array $sensitiveKeys List of sensitive keys to check against
+     * @return bool True if the key is sensitive, false otherwise
+     */
+    private function isSensitiveKey(string|int $key, array $sensitiveKeys): bool
+    {
+        // ✅ FIX: Skip numeric keys (array indices)
+        if (is_int($key)) {
             return false;
         }
 
-        $sourceId = $sourceAgent->getId() ?? 'unknown';
-        $sourceCapabilities = $this->getAgentCapabilities($sourceAgent);
-
-        // Check if there's a blacklist
-        if (isset($permission['blacklist'])) {
-            $blacklist = $permission['blacklist'];
-
-            // Check if source is blacklisted by ID or capabilities
-            foreach ($blacklist as $pattern) {
-                if ($this->agentMatchesPattern($sourceAgent, $pattern)) {
-                    Log::debug('[SecurityManager] Source agent matches blacklist pattern', [
-                        'source_id' => $sourceId,
-                        'pattern' => $pattern,
-                        'capabilities' => $sourceCapabilities
-                    ]);
-                    return false; // Blacklisted
-                }
-            }
-
-            // Remove blacklist key to process whitelist normally
-            $whitelistPermission = array_filter($permission, function($key) {
-                return $key !== 'blacklist';
-            }, ARRAY_FILTER_USE_KEY);
-        } else {
-            $whitelistPermission = $permission;
-        }
-
-        // Check whitelist
-        if (in_array('*', $whitelistPermission)) {
-            Log::debug('[SecurityManager] Wildcard permission found, allowing access');
-            return true;
-        }
-
-        // Check specific permissions (ID, capabilities, patterns)
-        foreach ($whitelistPermission as $pattern) {
-            if ($this->agentMatchesPattern($sourceAgent, $pattern)) {
-                Log::debug('[SecurityManager] Source agent matches whitelist pattern', [
-                    'source_id' => $sourceId,
-                    'pattern' => $pattern,
-                    'capabilities' => $sourceCapabilities
-                ]);
+        $lowerKey = strtolower($key);
+        foreach ($sensitiveKeys as $sensitiveKey) {
+            if (strpos($lowerKey, strtolower($sensitiveKey)) !== false) {
                 return true;
             }
         }
-
-        Log::debug('[SecurityManager] No matching permission found, denying access');
         return false;
     }
 
     /**
-     * Check if an agent matches a given pattern.
-     * Supports ID matching, capability matching, and wildcard patterns.
+     * Add a permission for a source agent to hand off to a target agent.
+     *
+     * @param string $sourceAgentId The ID of the source agent
+     * @param string $targetAgentId The ID of the target agent
+     * @return void
      */
-    private function agentMatchesPattern(Agent $agent, string $pattern): bool
+    public function addPermission(string $sourceAgentId, string $targetAgentId): void
     {
-        $agentId = $agent->getId() ?? 'unknown';
-        $capabilities = $this->getAgentCapabilities($agent);
-
-        // 1. Exact ID match
-        if ($agentId === $pattern) {
-            return true;
+        if (!isset($this->permissionMatrix[$sourceAgentId])) {
+            $this->permissionMatrix[$sourceAgentId] = [];
         }
 
-        // 2. Capability match (using capability: prefix)
-        if (str_starts_with($pattern, 'capability:')) {
-            $requiredCapability = substr($pattern, 11); // Remove 'capability:' prefix
-            return in_array($requiredCapability, $capabilities);
-        }
-
-        // 3. Wildcard pattern match on ID
-        if (str_contains($pattern, '*')) {
-            $regex = '/^' . str_replace('*', '.*', preg_quote($pattern, '/')) . '$/';
-            return preg_match($regex, $agentId) === 1;
-        }
-
-        return false;
-    }
-
-    /**
-     * Get agent capabilities from various sources.
-     */
-    private function getAgentCapabilities(Agent $agent): array
-    {
-        $capabilities = [];
-
-        // From AgentOptions
-        $options = $this->getAgentOptions($agent);
-        if ($options && $options->capabilities) {
-            $capabilities = array_merge($capabilities, $options->capabilities);
-        }
-
-        // From registry
-        $agentId = $agent->getId();
-        if ($agentId) {
-            $registryCapabilities = $this->registry->getAgentCapabilities($agentId);
-            $capabilities = array_merge($capabilities, $registryCapabilities);
-        }
-
-        // From config
-        $configCapabilities = $this->config['handoff']['capabilities'][$agentId] ?? [];
-        $capabilities = array_merge($capabilities, $configCapabilities);
-
-        return array_unique($capabilities);
-    }
-
-    /**
-     * Get AgentOptions from an Agent safely.
-     */
-    private function getAgentOptions(Agent $agent): ?AgentOptions
-    {
-        try {
-            $optionsArray = $agent->getOptions();
-            return $optionsArray ? AgentOptions::fromArray($optionsArray) : null;
-        } catch (\Exception $e) {
-            Log::warning('[SecurityManager] Failed to get agent options', [
-                'agent_id' => $agent->getId(),
-                'error' => $e->getMessage()
-            ]);
-            return null;
+        if (!in_array($targetAgentId, $this->permissionMatrix[$sourceAgentId])) {
+            $this->permissionMatrix[$sourceAgentId][] = $targetAgentId;
         }
     }
 
     /**
-     * Get the effective permission array for an agent.
+     * Remove a permission for a source agent to hand off to a target agent.
+     *
+     * @param string $sourceAgentId The ID of the source agent
+     * @param string $targetAgentId The ID of the target agent
+     * @return void
      */
-    public function getAgentPermissions(Agent $agent): array
+    public function removePermission(string $sourceAgentId, string $targetAgentId): void
     {
-        // From AgentOptions first
-        $options = $this->getAgentOptions($agent);
-        if ($options && $options->handoff_target_permission !== null) {
-            return $options->handoff_target_permission;
-        }
-
-        // From config specific
-        $agentId = $agent->getId();
-        $agentSpecific = $this->config['security']['agent_specific'][$agentId] ?? null;
-        if ($agentSpecific) {
-            return $agentSpecific;
-        }
-
-        // Default
-        return $this->config['security']['default_target_permission'] ?? ['*'];
-    }
-
-    /**
-     * Check if an agent has a specific capability.
-     */
-    public function agentHasCapability(Agent $agent, string $capability): bool
-    {
-        $capabilities = $this->getAgentCapabilities($agent);
-        return in_array($capability, $capabilities);
-    }
-
-    /**
-     * Find agents with specific capabilities.
-     */
-    public function findAgentsWithCapability(string $capability): array
-    {
-        $matchingAgents = [];
-
-        foreach ($this->registry->getAllAgents() as $agentId => $agent) {
-            if ($this->agentHasCapability($agent, $capability)) {
-                $matchingAgents[$agentId] = $agent;
+        if (isset($this->permissionMatrix[$sourceAgentId])) {
+            $index = array_search($targetAgentId, $this->permissionMatrix[$sourceAgentId]);
+            if ($index !== false) {
+                unset($this->permissionMatrix[$sourceAgentId][$index]);
+                $this->permissionMatrix[$sourceAgentId] = array_values($this->permissionMatrix[$sourceAgentId]);
             }
         }
-
-        return $matchingAgents;
-    }
-
-    /**
-     * Validate if source agent has permission to handoff to any agent with specific capability.
-     */
-    public function canHandoffToCapability(Agent $sourceAgent, string $capability): bool
-    {
-        $agentsWithCapability = $this->findAgentsWithCapability($capability);
-
-        foreach ($agentsWithCapability as $targetAgent) {
-            try {
-                $this->validateHandoffPermission($sourceAgent, $targetAgent);
-                return true; // Found at least one valid target
-            } catch (HandoffSecurityException $e) {
-                // Continue checking other agents
-                continue;
-            }
-        }
-
-        return false; // No valid targets found
     }
 }
