@@ -13,7 +13,7 @@ These guidelines instruct Junie (the JetBrains AI assistant) how to reason about
 - Facade: Sapiensly\OpenaiAgents\Facades\Agent
 - Core classes: Agent.php, Runner.php, AgentOptions.php, AgentManager.php, AgentServiceProvider.php
 - Events: Sapiensly\OpenaiAgents\Events\AgentResponseGenerated
-- Config: config/agents.php
+- Config: config/sapiensly-openai-agents.php
 - Progressive enhancement levels: 1) Conversational, 2) Tools (RAG, functions, web search, MCP), 3) Multi-agent handoffs/workflows, 4) Autonomous (self-monitoring/decisions/actions)
 
 ---
@@ -128,7 +128,7 @@ class ClassName
 
 ---
 
-### Configuration (config/agents.php)
+### Configuration (config/sapiensly-openai-agents.php)
 - api_key: OPENAI_API_KEY
 - default: model, temperature, top_p
 - testing: enable test routes/views/commands for SSE/chat streaming
@@ -281,8 +281,8 @@ $agentName1 = $runner->getCurrentAgentName(); // runner_agent
 ### What Junie Should Do in This Repo
 - Use these APIs and code references when generating examples, docs, or suggesting changes
 - When users ask “how to,” present concise code samples aligned with the WorkingREADME and src APIs
-- If exploring code: prioritize src/Agent.php, src/Runner.php, src/AgentOptions.php, src/AgentManager.php, src/AgentServiceProvider.php, config/agents.php
-- Be explicit about defaults coming from config/agents.php
+- If exploring code: prioritize src/Agent.php, src/Runner.php, src/AgentOptions.php, src/AgentManager.php, src/AgentServiceProvider.php, config/sapiensly-openai-agents.php
+- Be explicit about defaults coming from config/sapiensly-openai-agents.php
 - Acknowledge TODOs (image generation, code interpreter, computer use) and suggest placeholders rather than fabricating APIs
 - When advising on multi-agent setups, show Runner patterns (registerAgent, run, getCurrentAgentName) and mention handoff orchestration
 

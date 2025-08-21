@@ -1,202 +1,286 @@
-### Optional Conversation Persistence (Stateless by default)
+### Overview
+This document explains, in depth, how persistence works for:
+- Agent definitions (what an agent is: its id, options, instructions, etc.).
+- Conversation history (messages exchanged during a chat).
 
-By default, agents are stateless and keep message history only in memory within the PHP process. No database or cache is used unless you explicitly enable persistence per agent. This preserves current behavior for all existing code.
+By default, agents are stateless and keep their message history only in memory within the PHP process. No database or cache is used unless you explicitly opt in.
 
-This section shows how to optionally persist conversations so you can resume them later.
+### Two Types of Persistence
+- Agent Definition Persistence
+  - Controls whether agent definitions are stored and retrievable (independent of chat history).
+  - Configured in the `definitions` section of the unified `sapiensly-openai-agents.php` config file.
+  - Does not automatically make conversations persistent.
 
----
+- Conversation Persistence
+  - Stores and restores chat histories across requests.
+  - Configured in the `persistence` section of the unified `sapiensly-openai-agents.php` config file.
+  - Requires two things:
+    1) Global feature enabled in configuration.
+    2) Per-agent opt-in via withConversation().
 
-#### Key ideas
+### Quick Start: Enabling Conversation Persistence
+1) Ensure global persistence is enabled (default is enabled):
+   ```php
+   // In sapiensly-openai-agents.php config:
+   'persistence' => [
+       'enabled' => env('AGENT_PERSISTENCE_ENABLED', true),
+       'default' => env('AGENT_PERSISTENCE_STORE', 'database'),
+       // ...
+   ]
+   ```
 
-- Default remains stateless: no DB or cache needed, nothing changes unless you opt in.
-- Opt-in per agent with `withConversation()`: persistence is only active for that agent instance.
-- You control the store via config/env (database, cache, or null). The default is `null` to remain stateless.
-- Minimal context hydration: persisted context is injected safely (won’t overwrite your developer/system prompts) and recent messages are appended to the in-memory history.
-
----
-
-### Quick start: enable persistence per agent
+2) Opt in at agent creation time with withConversation():
 
 ```php
+php use Sapiensly\OpenaiAgents\AgentOptions; 
 use Sapiensly\OpenaiAgents\Facades\Agent;
-
-// 1) Create an agent and opt-in to persistence
-$agent = Agent::agent()->withConversation(); // auto-generates a UUID conversation id
-
-// Optional: provide your own conversation id (e.g., per user/session)
-$agent = Agent::agent()->withConversation('user-123-session-abc');
-
-// 2) Use as usual
-$response = $agent->chat('Hello, can you remember this?');
-
-// 3) Get the conversation id to resume later
-$conversationId = $agent->getConversationId();
-// Persist $conversationId somewhere you control (e.g., DB, session, cookie).
+$options = (new AgentOptions())->setTemperature(0.4) ->setInstructions('Always answer in Spanish.');
+$agent = Agent::agent(options)->withConversation(); // creates a new conversation id
+$response = $agent->chat('Hello, my name is John');
+// Retrieve the conversation and agent ids to resume later:
+$conversationId = $agent->getConversationId(); 
+$agentId = $agent->getId();
+// Later (e.g., another request):
+$rebuilt = Agent::load(agentId)->withConversation(conversationId);
+$response2 = $rebuilt->chat('What did I say previously?');
 ```
-
-Resuming later (e.g., in a different request):
-
-```php
-$agent = Agent::agent()->withConversation($conversationId);
-$response = $agent->chat('What did I say previously?');
-```
-
 Notes:
-- The agent persists both user and assistant messages when you call `chat()`.
-- If persistence is globally disabled or the store is set to `null`, `withConversation()` will still work but nothing gets saved (no-ops), keeping behavior stateless.
+- withConversation() without arguments will create a new UUID as the conversation id.
+- Passing an existing id will resume that conversation.
 
----
+### Agent Definition Persistence Configuration
 
-### Inspecting and managing persistent history
-
-- Get in-memory messages (will auto-hydrate from persistence if empty):
-  ```php
-  $messages = $agent->getMessages();
-  ```
-
-- Get persisted history directly (bypasses in-memory limit), with a limit:
-  ```php
-  $history = $agent->getPersistedHistory(50);
-  ```
-
-- Clear and delete the persisted conversation:
-  ```php
-  $agent->clearConversation(); // deletes persisted data for this conversation id and resets agent state
-  ```
-
----
-
-### How context hydration works
-
-When you call `withConversation($id)` and persistence is enabled:
-- The trait loads a compact “Persisted Context” system note built from:
-  - An optional summary (if you have one stored),
-  - The most recent messages (bounded by config).
-- It then appends the most recent messages to the in-memory history, respecting your `max_turns` setting.
-- If your Agent supports `appendInstructions()`, the context is added as an appended instruction; otherwise, it’s injected as a system message. Your own instructions are preserved.
-
----
-
-### Configuration
-
-Publish config (optional, recommended):
-
-- Config file tag:
-  - `php artisan vendor:publish --tag=agent-persistence-config`
-- Migrations tag (if using the database store):
-  - `php artisan vendor:publish --tag=agent-persistence-migrations`
-  - `php artisan migrate`
-
-Relevant `.env` (defaults shown):
-
-```
-AGENT_PERSISTENCE_ENABLED=true
-AGENT_PERSISTENCE_STORE=null  # options: null | database | cache (cache optional, see below)
-```
-
-`config/agent-persistence.php` highlights:
-
-- Global switch (still requires `withConversation()` per agent):
-  - `'enabled' => env('AGENT_PERSISTENCE_ENABLED', true)`
-- Default store (null keeps everything stateless by default):
-  - `'default' => env('AGENT_PERSISTENCE_STORE', 'null')`
-- Context strategy (used to build compact “Persisted Context”):
-  - `'context.strategy' => RecentMessagesStrategy::class`
-  - `'context.max_messages' => 20`
-  - `'context.include_summary' => true`
-- Summarization options are present but no auto-generation is enforced by default.
-
----
-
-### Stores
-
-- `null` (default) — No-ops. Safe, no external dependencies, preserves in-memory behavior.
-- `database` — Persists conversations/messages in your DB with optional cache acceleration.
-  - Set `AGENT_PERSISTENCE_STORE=database`
-  - Publish and run migrations.
-  - Uses Conversation and Message models/tables; includes minimal caching of messages/summary.
-- `cache` — Optional. If a `CacheStore` class is available in your setup, you can use `AGENT_PERSISTENCE_STORE=cache`. If not available, it gracefully falls back to `null`.
-
-Service provider binds `ConversationStore` based on config; if a store class isn’t present, it automatically falls back to `NullStore` to keep behavior safe.
-
----
-
-### Example: Database store setup
-
-1) Enable database store in `.env`:
-```
-AGENT_PERSISTENCE_STORE=database
-```
-
-2) Publish config and migrations:
-```
-php artisan vendor:publish --tag=agent-persistence-config
-php artisan vendor:publish --tag=agent-persistence-migrations
-php artisan migrate
-```
-
-3) Use `withConversation()` in your code:
+In the `sapiensly-openai-agents.php` config file:
 ```php
-$agent = Agent::agent()->withConversation('user-42');
-// from now on, messages are stored in your DB
+'definitions' => [ 
+    'enabled' => env('AGENT_DEFINITIONS_ENABLED', true), 
+    'store' => env('AGENT_DEFINITIONS_STORE', 'database'),
+    'stores' => [
+        'database' => [
+            'driver' => 'database',
+            'connection' => env('DB_CONNECTION', 'sqlite'),
+            'table' => 'agent_definitions',
+            'cache' => [
+                'enabled' => env('AGENT_DEFINITIONS_CACHE_ENABLED', false),
+                'ttl' => (int) env('AGENT_DEFINITIONS_CACHE_TTL', 86400),
+                'tags' => env('AGENT_DEFINITIONS_CACHE_TAGS', true),
+            ],
+        ],
+        
+        'cache' => [
+            'driver' => 'cache',
+            'store' => env('CACHE_DRIVER', 'redis'),
+            'prefix' => env('AGENT_DEFINITIONS_CACHE_PREFIX', 'agent_def:'),
+            'ttl' => (int) env('AGENT_DEFINITIONS_CACHE_TTL', 86400),
+        ],
+        
+        'null' => [
+            'driver' => 'null',
+        ],
+    ],
+],
+```
+This subsystem is independent: enabling definition persistence does not automatically persist conversations.
+
+### Conversation Persistence Configuration
+
+In the `sapiensly-openai-agents.php` config file:
+
+```php
+'persistence' => [ 
+    'enabled' => env('AGENT_PERSISTENCE_ENABLED', true), 
+    'default' => env('AGENT_PERSISTENCE_STORE', 'database'),
+    'stores' => [
+        'database' => [
+            'driver' => 'database',
+            'connection' => env('DB_CONNECTION'),
+            'cache' => [
+                'enabled' => env('AGENT_PERSISTENCE_CACHE_ENABLED', false),
+                'ttl' => (int) env('AGENT_PERSISTENCE_CACHE_TTL', 3600),
+                'tags' => env('AGENT_PERSISTENCE_CACHE_TAGS', true),
+            ],
+        ],
+        
+        'cache' => [
+            'driver' => 'cache',
+            'store' => env('CACHE_DRIVER', 'redis'),
+            'ttl' => (int) env('AGENT_PERSISTENCE_CACHE_TTL', 86400),
+            'prefix' => env('AGENT_PERSISTENCE_CACHE_PREFIX', 'agent_conv:'),
+        ],
+        
+        'null' => [
+            'driver' => 'null',
+        ],
+    ],
+    
+    'context' => [
+        'strategy' => \Sapiensly\OpenaiAgents\Persistence\Strategies\RecentMessagesStrategy::class,
+        'max_messages' => (int) env('AGENT_CONTEXT_MAX_MESSAGES', 20),
+        'max_tokens' => (int) env('AGENT_CONTEXT_MAX_TOKENS', 3000),
+        'include_summary' => env('AGENT_CONTEXT_INCLUDE_SUMMARY', true),
+    ],
+    
+    'summarization' => [
+        'enabled' => env('AGENT_SUMMARIZATION_ENABLED', true),
+        'after_messages' => (int) env('AGENT_SUMMARIZATION_AFTER_MESSAGES', 20),
+        'model' => env('AGENT_SUMMARY_MODEL', 'gpt-3.5-turbo'),
+        'max_length' => (int) env('AGENT_SUMMARY_MAX_LENGTH', 500),
+        'temperature' => (float) env('AGENT_SUMMARY_TEMPERATURE', 0.3),
+    ],
+    
+    'cleanup' => [
+        'enabled' => env('AGENT_CLEANUP_ENABLED', false),
+        'older_than_days' => (int) env('AGENT_CLEANUP_OLDER_THAN_DAYS', 90),
+        'keep_summaries' => env('AGENT_CLEANUP_KEEP_SUMMARIES', true),
+    ],
+],
 ```
 
----
+### Lifecycle Inside the Agent (PersistentAgentTrait)
+The trait Sapiensly\OpenaiAgents\Persistence\PersistentAgentTrait implements the behavior an Agent uses to persist and hydrate a conversation.
 
-### Controlling how much context is injected
+Key internal fields:
+- conversationId: string|null
+- persistenceStore: ConversationStore|null (resolved via the container)
+- contextStrategy: ContextStrategy|null (resolved via the container)
+- persistenceEnabled: bool (mirrors global config at the moment of withConversation())
+- autoSummarize: bool (defaults true)
+- summarizeAfter: int (defaults 20)
+- historyHydrated: bool (guards hydration to happen once)
 
-Use config values to tune the injected context size:
+#### withConversation(?string $conversationId = null)
+- Resets persistence-related state to avoid stale references (critical when using Agent::load()).
+- Sets conversationId to provided value or a newly generated UUID.
+- Loads persistenceEnabled from config('sapiensly-openai-agents.persistence.enabled', true).
+- Resolves a fresh ConversationStore and ContextStrategy from the container.
+- Creates or finds the conversation record by calling persistenceStore->findOrCreate(conversationId, [agent_id, model]).
+- Immediately calls hydratePersistedHistoryIfNeeded() to populate message history.
 
-- `agent-persistence.context.max_messages`: cap of recent messages in the “Persisted Context” block.
-- `agent-persistence.context.include_summary`: include a stored summary if available.
+#### Hydration: hydratePersistedHistoryIfNeeded()
+- Skips if already hydrated, persistence is disabled, or no conversation id is present.
+- Determines a fetch limit from options->max_turns (or 50 as default).
+- Fetches persisted messages via persistenceStore->getRecentMessages(conversationId, limit).
+- Preserves any in-memory system and developer messages (instructions, system prompts) from the current agent instance.
+- Rebuilds the message list as:
+  1) preserved system/developer messages
+  2) persisted messages sorted by created_at ascending
+- Marks as hydrated to avoid double hydration.
+- Extensively logs actions to aid debugging.
 
-You can swap the context builder by changing:
-- `'context.strategy' => YourCustomStrategy::class`
+Why preserve system/developer messages?
+- So that core instructions or developer/system prompts configured in-memory are not lost when merging with stored history. The conversation is reconstructed as: instructions + stored turns.
 
-Implement `Sapiensly\OpenaiAgents\Persistence\Strategies\ContextStrategy` and return a compact string.
+#### Persisting messages: persistMessage($role, $content, array $metadata = [])
+- No-ops if persistence is disabled or there is no conversation id.
+- Otherwise, calls persistenceStore->addMessage(conversationId, [role, content, token_count, metadata]).
+- token_count is optional and can be supplied through metadata.
+- Wraps the write in try/catch with logging and rethrows on errors.
+- Calls maybeSummarize() at the end as a hook for deferred summarization.
 
----
+#### Getting stored history: getPersistedHistory(int $limit = 50)
+- Returns an array from persistenceStore->getRecentMessages(conversationId, limit), or [] if disabled/no id.
 
-### Summarization
+#### Summarization hook: maybeSummarize()
+- Controlled by autoSummarize and the global summarization config.
+- Retrieves the last N messages and, when thresholds are met (after_messages and on multiples of 10), provides a minimal hook (no model call in-place) intended to be implemented via alternative bindings or background jobs.
 
-The trait includes hooks for summarization but does not generate summaries by default (to avoid extra model deps). You can:
-- Generate summaries in a queue job when message counts hit thresholds.
-- Store them by calling `ConversationStore::updateSummary($id, $summary)`.
-- They will be auto-injected (if `include_summary` is true) to reduce token usage while maintaining context.
+#### Clearing and resetting: clearConversation()
+- If a conversation exists, calls persistenceStore->delete(conversationId) to wipe persisted data.
+- Resets conversationId, disables persistence, and clears in-memory messages.
 
----
+#### Checking state: isPersistenceEnabled()
+- Returns true only if persistenceEnabled is true AND conversationId is present AND a persistence store is set.
 
-### Backward compatibility
+### How the Store Is Chosen and Used
+- The ConversationStore implementation is resolved from the IoC container. The binding is expected to honor the unified configuration's persistence.default store and its configured driver.
+- database store: persists conversations and messages to a DB connection. Can layer a Redis cache for lookups.
+- cache store: keeps conversations ephemeral in a cache backend (e.g., Redis) with ttl and prefix.
+- null store: performs no persistence (useful for testing or explicit off-switch).
 
-- If you never call `withConversation()`, nothing changes.
-- If `AGENT_PERSISTENCE_STORE` is `null` (default), even with `withConversation()` there’s no DB/cache requirement and no persisted writes.
-- Persistence logic is additive and non-breaking, respecting your existing instructions and message flow.
+The trait calls these ConversationStore methods (conceptually):
+- findOrCreate($conversationId, [agent_id, model])
+- getRecentMessages($conversationId, $limit)
+- addMessage($conversationId, [role, content, token_count, metadata])
+- delete($conversationId)
 
----
+### Context Strategy and Prompt Construction
+- The configured context.strategy (RecentMessagesStrategy by default) represents how the persisted history is selected and injected into a prompt window.
+- Related limits (max_messages, max_tokens) and include_summary drive how much of the history is brought into context for a request.
+- The trait itself handles hydration (repopulating the agent's internal $messages), while the ContextStrategy governs selection for model calls.
 
-### Troubleshooting
+### Configuration Reference (at a glance)
+- Unified configuration in `sapiensly-openai-agents.php`:
+  - persistence:
+    - enabled: true|false (AGENT_PERSISTENCE_ENABLED)
+    - default: database|cache|null (AGENT_PERSISTENCE_STORE)
+    - stores.database: driver, connection, cache(enabled|ttl|tags)
+    - stores.cache: driver, store, ttl, prefix
+    - stores.null: driver
+    - context: strategy, max_messages, max_tokens, include_summary
+    - summarization: enabled, after_messages, model, max_length, temperature
+    - cleanup: enabled, older_than_days, keep_summaries
 
-- “Nothing persists”: Check `.env` has `AGENT_PERSISTENCE_ENABLED=true` and `AGENT_PERSISTENCE_STORE=database`, migrations ran, and you’re calling `withConversation()`.
-- “Context seems missing”: Ensure you call `withConversation($id)` before `chat()`, and that your store returns messages for that id.
-- “Too many tokens”: Tune `agent-persistence.context.*` settings and your agent’s `max_turns`/`max_conversation_tokens`.
-- “Cache tags not available”: The DB store will still work; it simply won’t use cache tags if your cache driver doesn’t support them.
+  - definitions:
+    - enabled: true|false (AGENT_DEFINITIONS_ENABLED)
+    - store: null|database|cache (AGENT_DEFINITIONS_STORE)
+    - stores.database: driver, connection, table, cache(enabled|ttl|tags)
+    - stores.cache: driver, store, prefix, ttl
+    - stores.null: driver
 
----
+### Usage Patterns and Examples
+- Stateless default:
+```php
+$agent = Agent::agent();
+$agent->chat('Hi'); // history is in memory only; new request loses it
+```
 
-### Minimal usage patterns
+- Persisted conversation across requests:
+```php
+$agent = Agent::agent()->withConversation();
+$agent->chat('Hi');
+$conversationId = $agent->getConversationId();
+$agentId = $agent->getId();
 
-- Stateless (default):
-  ```php
-  $agent = Agent::agent();
-  $agent->chat('Hello'); // in-memory only
-  ```
+// later request
+$agent2 = Agent::load($agentId)->withConversation($conversationId);
+$agent2->chat('What did I just say?');
+```
 
-- Persisted:
-  ```php
-  $agent = Agent::agent()->withConversation('session-xyz');
-  $agent->chat('Please remember this.');
-  // Later (new request)
-  Agent::agent()->withConversation('session-xyz')->chat('What did I ask you to remember?');
-  ```
+- Limiting how much history is retained in-memory when hydrating:
+  - options->max_turns affects the number of messages retrieved on hydration (default 50 if not set).
+  - The context strategy settings further shape what is sent to the model.
 
-This adds persistence as an optional, explicit feature while keeping the library stateless by default.
+### Operational Notes and Best Practices
+- Always call withConversation() for any agent whose chat you want to resume later. Without this call, nothing is persisted even if global persistence is enabled.
+- Preserve instructions by design: system/developer messages present in the agent at the time of hydration are kept and prepended to the hydrated history. This ensures your instruction stack remains intact.
+- Stores and environment:
+  - For production, prefer 'database' with optional Redis caching for faster lookups.
+  - For ephemeral sessions, 'cache' store can be sufficient but data will expire with TTL.
+  - Use 'null' for tests where you intentionally do not want persistence.
+- Error handling: persistMessage() logs and rethrows exceptions on failures to write to the store, allowing upstream handling.
+- Summaries: the built-in summarization method is a hook; wire up a background job or alternative trait/binding if you need automatic summary generation.
+- Clearing data: clearConversation() deletes persisted data for the current conversation and resets in-memory state—use cautiously.
+- Diagnostics: extensive logs in hydration and persistence flows can be reviewed in your application log (e.g., storage/logs/laravel.log) to troubleshoot.
+
+### FAQ
+- Does enabling agent definition persistence also enable conversation history persistence?
+  - No. They are separate systems. You must call withConversation() to persist chat history.
+
+- Can I choose a different store per environment?
+  - Yes. Use env vars AGENT_PERSISTENCE_STORE (database|cache|null) and DB/CACHE env settings accordingly.
+
+- How are messages ordered when hydrating?
+  - Persisted messages are sorted by created_at ascending, then appended after any preserved system/developer messages.
+
+- What happens to existing in-memory user/assistant messages when hydrating?
+  - Only system/developer messages are preserved; the rest is replaced by the persisted history.
+
+- How do I retrieve the persisted history manually?
+  - Call getPersistedHistory($limit). It returns [] if persistence is not enabled or no conversation id is set.
+
+### Summary
+- Persistence is opt-in per agent and controlled by a global switch.
+- Agent definition persistence and conversation persistence are distinct features.
+- withConversation() is the entry point for a persistent chat: it sets an id, ensures a store and context strategy, creates the record, and hydrates history while preserving system/developer prompts.
+- Messages are persisted as you chat; you can resume later by reloading the agent and supplying the conversation id.
+- Configuration allows you to switch stores, control context size, and hook summarization.

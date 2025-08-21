@@ -4,24 +4,21 @@ namespace Sapiensly\OpenaiAgents\Facades;
 
 use Illuminate\Support\Facades\Facade;
 use Sapiensly\OpenaiAgents\Agent as AgentClass;
+use Sapiensly\OpenaiAgents\AgentManager;
+use Sapiensly\OpenaiAgents\AgentOptions;
 use Sapiensly\OpenaiAgents\Runner;
 
 /**
- * @method static string simpleChat(string $message, array $options = [])
  * @method static Runner runner(array $options = [])
  * @method static AgentClass use(string $agentName)
  * @method static AgentClass create(array $config)
- * @method static AgentClass agent(array $options = [], string $systemPrompt = null)
  * @method static AgentClass persistent(string $conversationId = null, array $options = null)
  * @method static AgentClass continueConversation(string $conversationId, array $options = null)
  * @method static AgentClass newConversation(array $options = null)
- * @method static Runner createRunner(AgentClass $agent = null, int $maxTurns = null)
- * @method static int getProgressiveLevel()
- * @method static bool isProgressiveFeatureEnabled(string $feature)
- * @method static AgentClass autoConfigureAgent(AgentClass $agent)
+
  *
- * @see \Sapiensly\OpenaiAgents\Agent
- * @see \Sapiensly\OpenaiAgents\AgentManager
+ * @see AgentClass
+ * @see AgentManager
  */
 class Agent extends Facade
 {
@@ -30,7 +27,7 @@ class Agent extends Facade
      *
      * @return string
      */
-    protected static function getFacadeAccessor()
+    protected static function getFacadeAccessor(): string
     {
         return 'agent';
     }
@@ -38,9 +35,9 @@ class Agent extends Facade
     /**
      * Get the agent manager instance.
      *
-     * @return \Sapiensly\OpenaiAgents\AgentManager
+     * @return AgentManager
      */
-    public static function manager()
+    public static function manager(): AgentManager
     {
         return app('agent.manager');
     }
@@ -48,11 +45,11 @@ class Agent extends Facade
     /**
      * Create a simple agent instance.
      *
-     * @param array $options
+     * @param array|AgentOptions $options
      * @param string|null $systemPrompt
-     * @return \Sapiensly\OpenaiAgents\Agent
+     * @return AgentClass
      */
-    public static function agent(array $options = [], ?string $systemPrompt = null)
+    public static function agent(array|AgentOptions $options = [], ?string $systemPrompt = null): AgentClass
     {
         return static::manager()->agent($options, $systemPrompt);
     }
@@ -63,6 +60,7 @@ class Agent extends Facade
      * @param string $message
      * @param array $options
      * @return string
+     * @throws \Exception
      */
     public static function simpleChat(string $message, array $options = []): string
     {
@@ -73,11 +71,11 @@ class Agent extends Facade
     /**
      * Create a runner instance.
      *
-     * @param \Sapiensly\OpenaiAgents\Agent|null $agent
+     * @param AgentClass|null $agent
      * @param int|null $maxTurns
-     * @return \Sapiensly\OpenaiAgents\Runner
+     * @return Runner
      */
-    public static function createRunner(?AgentClass $agent = null, ?int $maxTurns = null)
+    public static function createRunner(?AgentClass $agent = null, ?int $maxTurns = null): Runner
     {
         return static::manager()->runner($agent, $maxTurns);
     }
@@ -106,11 +104,32 @@ class Agent extends Facade
     /**
      * Auto-configure an agent based on progressive level.
      *
-     * @param \Sapiensly\OpenaiAgents\Agent $agent
-     * @return \Sapiensly\OpenaiAgents\Agent
+     * @param AgentClass $agent
+     * @return AgentClass
      */
     public static function autoConfigureAgent(AgentClass $agent): AgentClass
     {
         return static::manager()->autoConfigureAgent($agent);
+    }
+
+    /**
+     * Load a saved agent definition.
+     *
+     * @param string $name The name/ID of the saved agent
+     * @return AgentClass|null The loaded agent or null if not found
+     */
+    public static function load(string $name): ?AgentClass
+    {
+        return AgentClass::load($name);
+    }
+
+    /**
+     * List all saved agent definitions.
+     *
+     * @return array List of saved agent names/IDs
+     */
+    public static function listSaved(): array
+    {
+        return AgentClass::listSaved();
     }
 }

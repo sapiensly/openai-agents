@@ -3,13 +3,11 @@ declare(strict_types=1);
 
 namespace Sapiensly\OpenaiAgents\Persistence;
 
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Sapiensly\OpenaiAgents\Persistence\Contracts\ConversationStore;
 use Sapiensly\OpenaiAgents\Persistence\Strategies\ContextStrategy;
 
-/**
- * Trait that adds optional persistence to Agent without breaking defaults.
- */
 trait PersistentAgentTrait
 {
     protected ?string $conversationId = null;
@@ -18,72 +16,166 @@ trait PersistentAgentTrait
     protected bool $persistenceEnabled = false;
     protected bool $autoSummarize = true;
     protected int $summarizeAfter = 20;
+    protected bool $historyHydrated = false;
 
-    /**
-     * Enable persistence for this agent with a conversation ID.
-     */
     public function withConversation(?string $conversationId = null): self
     {
+        // CRUCIAL: Reset state cuando se llama withConversation(),
+        // especialmente importante para agentes deserializados con load()
+        $this->resetPersistenceState();
+
         $this->conversationId = $conversationId ?: (string) Str::uuid();
-        $this->persistenceEnabled = (bool) (config('agent-persistence.enabled', true));
+        $this->persistenceEnabled = (bool) (config('sapiensly-openai-agents.persistence.enabled', true));
 
-        if (!$this->persistenceStore) {
-            // Resolve store from container; default binding should be NullStore
-            $this->persistenceStore = app(ConversationStore::class);
-        }
-        if (!$this->contextStrategy) {
-            $this->contextStrategy = app(ContextStrategy::class);
-        }
+        // SIEMPRE re-resolver stores frescos desde container
+        $this->persistenceStore = app(ConversationStore::class);
+        $this->contextStrategy = app(ContextStrategy::class);
 
-        // Create conversation right away
+        // Create conversation
         $this->persistenceStore->findOrCreate($this->conversationId, [
             'agent_id' => method_exists($this, 'getId') ? $this->getId() : null,
             'model' => $this->options->get('model') ?? null,
         ]);
-        $this->loadPersistedContext();
+
+        // Rehidrata inmediatamente para agentes cargados
+        $this->hydratePersistedHistoryIfNeeded();
+
         return $this;
     }
 
     /**
-     * Get the current conversation ID or null.
+     * Reset persistence state - crítico para agentes deserializados
      */
+    protected function resetPersistenceState(): void
+    {
+        $this->historyHydrated = false;
+        $this->persistenceStore = null;
+        $this->contextStrategy = null;
+        // NO resetear conversationId ni persistenceEnabled aquí
+        // ya que withConversation() los va a configurar inmediatamente
+    }
+
     public function getConversationId(): ?string
     {
         return $this->conversationId;
     }
 
-    /**
-     * Load persisted context/messages non-destructively.
-     */
-    protected function loadPersistedContext(): void
+    protected function hydratePersistedHistoryIfNeeded(): void
     {
-        if (!$this->persistenceEnabled || !$this->conversationId) {
+        Log::info('=== HYDRATION DEBUG START ===', [
+            'historyHydrated' => $this->historyHydrated,
+            'persistenceEnabled' => $this->persistenceEnabled,
+            'conversationId' => $this->conversationId,
+            'current_messages_count' => count($this->messages ?? [])
+        ]);
+
+        if ($this->historyHydrated || !$this->persistenceEnabled || !$this->conversationId) {
+            Log::info('Skipping hydration', [
+                'reason' => $this->historyHydrated ? 'already_hydrated' :
+                    (!$this->persistenceEnabled ? 'persistence_disabled' : 'no_conversation_id')
+            ]);
             return;
         }
-        $messages = $this->persistenceStore->getRecentMessages($this->conversationId, (int) (config('agent-persistence.context.max_messages') ?? 20));
-        $summary = $this->persistenceStore->getSummary($this->conversationId);
-        $context = $this->contextStrategy->buildContext($messages, $summary);
 
-        if ($context) {
-            // Avoid overwriting developer/system prompts; add a contextual system note
-            if (method_exists($this, 'appendInstructions')) {
-                // Prefer instructions append if available
-                $this->appendInstructions("\n\n[Persisted Context]\n" . $context);
-            } else {
-                $this->messages[] = ['role' => 'system', 'content' => $context];
-            }
+        $limit = $this->options->max_turns ?? 50;
+        Log::info('Fetching persisted messages', ['limit' => $limit]);
+
+        $persisted = $this->persistenceStore->getRecentMessages($this->conversationId, $limit);
+
+        Log::info('Persisted messages fetched', [
+            'count' => count($persisted),
+            'messages' => $persisted
+        ]);
+
+        if (empty($persisted)) {
+            Log::info('No persisted messages found, marking as hydrated');
+            $this->historyHydrated = true;
+            return;
         }
-        $maxTurns = (int) ($this->options->get('max_turns') ?? 10);
-        $recentMessages = array_slice($messages, -($maxTurns * 2));
-        foreach ($recentMessages as $msg) {
-            if (!$this->messageExists($msg)) {
-                $this->messages[] = [
-                    'role' => (string) ($msg['role'] ?? ''),
-                    'content' => (string) ($msg['content'] ?? ''),
-                ];
-            }
+
+        // Log current state
+        $inMemory = $this->messages ?? [];
+        Log::info('Current in-memory messages', [
+            'count' => count($inMemory),
+            'messages' => $inMemory
+        ]);
+
+        $preservedMsgs = array_values(array_filter($inMemory, static fn($m) =>
+        in_array($m['role'] ?? null, ['system', 'developer'], true)
+        ));
+
+        Log::info('Preserved messages (system/developer)', [
+            'count' => count($preservedMsgs),
+            'messages' => $preservedMsgs
+        ]);
+
+        // Reconstruye: instrucciones preservadas + historial persistido
+        $this->messages = $preservedMsgs;
+
+        // Ordena persisted por fecha y agrega
+        usort($persisted, function($a, $b) {
+            $aTime = isset($a['created_at']) ? strtotime($a['created_at']) : 0;
+            $bTime = isset($b['created_at']) ? strtotime($b['created_at']) : 0;
+            return $aTime <=> $bTime;
+        });
+
+        Log::info('Adding persisted messages to conversation');
+        foreach ($persisted as $m) {
+            $this->messages[] = [
+                'role' => $m['role'] ?? 'user',
+                'content' => $m['content'] ?? '',
+            ];
         }
+
+        Log::info('Hydration completed', [
+            'final_message_count' => count($this->messages),
+            'final_messages' => $this->messages
+        ]);
+
+        $this->historyHydrated = true;
+        Log::info('=== HYDRATION DEBUG END ===');
     }
+
+    /**
+     * @throws \Exception
+     */
+    protected function persistMessage(string $role, string $content, array $metadata = []): void
+    {
+        Log::info('=== PERSIST MESSAGE DEBUG ===', [
+            'role' => $role,
+            'content' => substr($content, 0, 100) . '...',
+            'persistenceEnabled' => $this->persistenceEnabled,
+            'conversationId' => $this->conversationId,
+            'hasStore' => $this->persistenceStore !== null
+        ]);
+
+        if (!$this->persistenceEnabled || !$this->conversationId) {
+            Log::warning('Skipping persist message', [
+                'reason' => !$this->persistenceEnabled ? 'persistence_disabled' : 'no_conversation_id'
+            ]);
+            return;
+        }
+
+        try {
+            $this->persistenceStore->addMessage($this->conversationId, [
+                'role' => $role,
+                'content' => $content,
+                'token_count' => $metadata['token_count'] ?? null,
+                'metadata' => $metadata,
+            ]);
+
+            Log::info('Message persisted successfully');
+        } catch (\Exception $e) {
+            Log::error('Failed to persist message', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            throw $e;
+        }
+
+        $this->maybeSummarize();
+    }
+
 
     protected function messageExists(array $message): bool
     {
@@ -96,21 +188,12 @@ trait PersistentAgentTrait
         return false;
     }
 
-    /**
-     * Persist a message if enabled.
-     */
-    protected function persistMessage(string $role, string $content, array $metadata = []): void
+    public function getPersistedHistory(int $limit = 50): array
     {
         if (!$this->persistenceEnabled || !$this->conversationId) {
-            return;
+            return [];
         }
-        $this->persistenceStore->addMessage($this->conversationId, [
-            'role' => $role,
-            'content' => $content,
-            'token_count' => $metadata['token_count'] ?? null,
-            'metadata' => $metadata,
-        ]);
-        $this->maybeSummarize();
+        return $this->persistenceStore->getRecentMessages($this->conversationId, $limit);
     }
 
     /**
@@ -121,7 +204,7 @@ trait PersistentAgentTrait
         if (!$this->autoSummarize || !$this->persistenceEnabled || !$this->conversationId) {
             return;
         }
-        $after = (int) (config('agent-persistence.summarization.after_messages') ?? $this->summarizeAfter);
+        $after = (int) (config('sapiensly-openai-agents.persistence.summarization.after_messages') ?? $this->summarizeAfter);
         $messages = $this->persistenceStore->getRecentMessages($this->conversationId, 100);
         if (count($messages) >= $after && count($messages) % 10 === 0) {
             // For minimal implementation, we skip generating summary to avoid model dependency here.
@@ -144,13 +227,13 @@ trait PersistentAgentTrait
     }
 
     /**
-     * Get persisted history (recent messages).
+     * Check if persistence is enabled.
      */
-    public function getPersistedHistory(int $limit = 50): array
+    public function isPersistenceEnabled(): bool
     {
-        if (!$this->persistenceEnabled || !$this->conversationId) {
-            return [];
-        }
-        return $this->persistenceStore->getRecentMessages($this->conversationId, $limit);
+        return $this->persistenceEnabled && $this->conversationId && $this->persistenceStore;
     }
+
 }
+
+

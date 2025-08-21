@@ -21,7 +21,7 @@ class AgentManager
      */
     public function __construct(array $config)
     {
-        $this->config = $config;
+        $this->config = $config; //TODO: Understand how to use this config
     }
 
     /**
@@ -31,15 +31,12 @@ class AgentManager
      * and system prompt. It checks for the usage of a mock OpenAI class in a test
      * environment, otherwise defaults to creating a Factory-based client.
      *
-     * @param array|null $options The configuration options for the Agent. Defaults to `null`.
+     * @param array|AgentOptions|null $options The configuration options for the Agent. Defaults to `null`.
      * @param string|null $systemPrompt The system prompt to initialize the Agent. Defaults to `null`.
      * @return Agent A new Agent instance.
      */
-    public function agent(array|null $options = null, string|null $systemPrompt = null): Agent
+    public function agent(array|AgentOptions|null $options = null, string|null $systemPrompt = null): Agent
     {
-        $options ??= [];
-        $options = array_replace_recursive($this->config['default'] ?? [], $options);
-
         // Check if we're in a test environment using the mock class
         if (class_exists(MockOpenAI::class) &&
             MockOpenAI::$factory !== null) {
@@ -180,5 +177,26 @@ class AgentManager
         ];
 
         return $defaultTools[$toolName] ?? fn($input) => "Tool {$toolName} not found";
+    }
+
+    /**
+     * Load a saved agent definition.
+     *
+     * @param string $name The name/ID of the saved agent
+     * @return Agent|null The loaded agent or null if not found
+     */
+    public function loadAgent(string $name): ?Agent
+    {
+        return Agent::load($name);
+    }
+
+    /**
+     * List all saved agent definitions.
+     *
+     * @return array List of saved agent names/IDs
+     */
+    public function listSavedAgents(): array
+    {
+        return Agent::listSaved();
     }
 }

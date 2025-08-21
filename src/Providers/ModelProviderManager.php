@@ -48,8 +48,8 @@ class ModelProviderManager
     {
         // Register OpenAI provider
         $this->registerProvider('openai', new OpenAIProvider([
-            'api_key' => Config::get('agents.api_key'),
-            'organization' => Config::get('agents.organization'),
+            'api_key' => Config::get('sapiensly-openai-agents.api_key'),
+            'organization' => Config::get('sapiensly-openai-agents.organization'),
         ]));
     }
 
@@ -84,8 +84,8 @@ class ModelProviderManager
      */
     public function getCurrentProvider(): ModelProviderInterface
     {
-        return $this->providers[$this->currentProvider] ?? 
-               $this->providers[$this->defaultProvider] ?? 
+        return $this->providers[$this->currentProvider] ??
+               $this->providers[$this->defaultProvider] ??
                throw new \Exception("No provider available");
     }
 
@@ -134,7 +134,7 @@ class ModelProviderManager
     public function testAllConnections(): array
     {
         $results = [];
-        
+
         foreach ($this->providers as $name => $provider) {
             $results[$name] = [
                 'name' => $provider->getName(),
@@ -155,7 +155,7 @@ class ModelProviderManager
     public function getAllStats(): array
     {
         $stats = [];
-        
+
         foreach ($this->providers as $name => $provider) {
             $stats[$name] = $provider->getStats();
         }
@@ -171,7 +171,7 @@ class ModelProviderManager
     public function getAllAvailableModels(): array
     {
         $models = [];
-        
+
         foreach ($this->providers as $name => $provider) {
             $models[$name] = $provider->getAvailableModels();
         }
@@ -247,4 +247,4 @@ class ModelProviderManager
     {
         return $this->getCurrentProvider()->generateSpeech($text, $options);
     }
-} 
+}

@@ -5,6 +5,7 @@ namespace Sapiensly\OpenaiAgents;
 
 use Illuminate\Support\ServiceProvider;
 use Sapiensly\OpenaiAgents\Persistence\Contracts\ConversationStore;
+use Sapiensly\OpenaiAgents\Persistence\Stores\DatabaseStore;
 use Sapiensly\OpenaiAgents\Persistence\Strategies\ContextStrategy;
 use Sapiensly\OpenaiAgents\Persistence\Strategies\RecentMessagesStrategy;
 use Sapiensly\OpenaiAgents\Persistence\Stores\NullStore;
@@ -13,6 +14,40 @@ class PersistenceServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
+        $this->app->singleton(ConversationStore::class, function ($app) {
+            $default = config('sapiensly-openai-agents.persistence.default', 'null');
+
+            switch ($default) {
+                case 'database':
+                    if (class_exists(DatabaseStore::class)) {
+                        return $app->make(DatabaseStore::class);
+                    }
+                    return new NullStore();
+
+                case 'cache':
+                    if (class_exists(CacheStore::class)) {
+                        return $app->make(CacheStore::class);
+                    }
+                    return new NullStore();
+
+                case 'null':
+                default:
+                    return new NullStore();
+            }
+        });
+
+        // Bind ContextStrategy using unified config
+        $this->app->singleton(ContextStrategy::class, function ($app) {
+            $strategy = config('sapiensly-openai-agents.persistence.context.strategy');
+
+            if (is_string($strategy) && class_exists($strategy)) {
+                return $app->make($strategy);
+            }
+
+            return new RecentMessagesStrategy();
+        });
+
+        /*
         // Merge default config
         $this->mergeConfigFrom(__DIR__ . '/../config/agent-persistence.php', 'agent-persistence');
 
@@ -45,10 +80,12 @@ class PersistenceServiceProvider extends ServiceProvider
             }
             return new RecentMessagesStrategy();
         });
+        */
     }
 
     public function boot(): void
     {
+        /*
         // Publish config and (optionally) migrations
         $this->publishes([
             __DIR__ . '/../config/agent-persistence.php' => config_path('agent-persistence.php'),
@@ -60,5 +97,6 @@ class PersistenceServiceProvider extends ServiceProvider
                 $migration => database_path('migrations/2024_01_01_000000_create_agent_conversations_tables.php'),
             ], 'agent-persistence-migrations');
         }
+        */
     }
 }

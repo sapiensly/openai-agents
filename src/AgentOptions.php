@@ -39,29 +39,31 @@ class AgentOptions
         public string|null $mode = null,
         public string|null $autonomy_level = null,
         public array|null  $capabilities = null,
-        public array|null  $tools = null, // Default to an empty array
+        public array|null  $tools = null,
         public string|null $system_prompt = null,
-        public string|null $instructions = null, // Optional instructions for the agent (responses api)
+        public string|null $instructions = null,
         public int|null    $max_turns = null,
         public int|null    $max_input_tokens = null,
         public int|null    $max_conversation_tokens = null,
-        public array|null  $handoff_target_permission = null, // Permission array for handoff target
+        public array|null  $handoff_target_permission = null,
     ) {
-        // Establecer valores por defecto dentro del constructor
+        // Load defaults from  configuration
+        $defaults = config('sapiensly-openai-agents.default_options', []);
+
+        // Set default values ONLY if not provided
         $this->tools ??= [];
-        $this->model = $this->model ?? config('agents.default.model', 'gpt-4o');
-        $this->temperature = $this->temperature ?? config('agents.default.temperature', 0.7);
-        $this->top_p = $this->top_p ?? config('agents.default.top_p', 0.9);
-        $this->mode = $this->mode ?? config('agents.default.mode', 'default');
-        $this->autonomy_level = $this->autonomy_level ?? config('agents.default.autonomy_level', 'low');
-        $this->capabilities = $this->capabilities ?? config('agents.default.capabilities', []);
-        $this->tools = $this->tools ?? config('agents.default.tools', []);
-        $this->system_prompt = $this->system_prompt ?? config('agents.default.system_prompt', '');
-        $this->instructions = $this->instructions ?? config('agents.default.instructions', '');
-        $this->max_turns = $this->max_turns ?? config('agents.default.max_turns', 10);
-        $this->max_input_tokens = $this->max_input_tokens ?? config('agents.default.max_input_tokens', 4096);
-        $this->max_conversation_tokens = $this->max_conversation_tokens ?? config('agents.default.max_conversation_tokens', 10000);
-        $this->handoff_target_permission = $this->handoff_target_permission ?? config('agents.handoff.security.default_target_permission', ['*']); // Default to allow all handoff targets
+        $this->model ??= $defaults['model'] ?? 'gpt-4o';
+        $this->temperature ??= $defaults['temperature'] ?? 0.7;
+        $this->top_p ??= $defaults['top_p'] ?? 0.9;
+        $this->mode ??= $defaults['mode'] ?? 'default';
+        $this->autonomy_level ??= $defaults['autonomy_level'] ?? 'low';
+        $this->capabilities ??= $defaults['capabilities'] ?? [];
+        $this->system_prompt ??= $defaults['system_prompt'] ?? '';
+        $this->instructions ??= $defaults['instructions'] ?? '';
+        $this->max_turns ??= $defaults['max_turns'] ?? 10;
+        $this->max_input_tokens ??= $defaults['max_input_tokens'] ?? 4096;
+        $this->max_conversation_tokens ??= $defaults['max_conversation_tokens'] ?? 10000;
+        $this->handoff_target_permission ??= $defaults['handoff_target_permission'] ?? null;
 
         // Validaciones
         if ($this->temperature !== null && ($this->temperature < 0.0 || $this->temperature > 1.0)) {
@@ -91,7 +93,6 @@ class AgentOptions
         if ($this->handoff_target_permission !== null && !is_array($this->handoff_target_permission)) {
             throw new InvalidArgumentException('Handoff target permission must be an array');
         }
-
     }
 
     /**
@@ -103,19 +104,19 @@ class AgentOptions
     public static function fromArray(array $options): self
     {
         return new self(
-            model: $options['model'] ?? config('agents.default.model', 'gpt-4o'),
-            temperature: $options['temperature'] ?? config('agents.default.temperature', 0.7),
-            top_p: $options['top_p'] ?? config('agents.default.top_p', 0.9),
-            mode: $options['mode'] ?? config('agents.default.mode', 'default'),
-            autonomy_level: $options['autonomy_level'] ?? config('agents.default.autonomy_level', 'low'),
-            capabilities: $options['capabilities'] ?? config('agents.default.capabilities', []),
-            tools: $options['tools'] ?? config('agents.default.tools', []),
-            system_prompt: $options['system_prompt'] ?? config('agents.default.system_prompt', ''),
-            instructions: $options['instructions'] ?? config('agents.default.instructions', ''),
-            max_turns: $options['max_turns'] ?? config('agents.default.max_turns', 10),
-            max_input_tokens: $options['max_input_tokens'] ?? config('agents.default.max_input_tokens', 4096),
-            max_conversation_tokens: $options['max_conversation_tokens'] ?? config('agents.default.max_conversation_tokens', 10000),
-            handoff_target_permission: $options['handoff_target_permission'] ?? null
+            model: $options['model'] ?? config('sapiensly-openai-agents.default_options.model', 'gpt-4o'),
+            temperature: $options['temperature'] ?? config('sapiensly-openai-agents.default_options.temperature', 0.7),
+            top_p: $options['top_p'] ?? config('sapiensly-openai-agents.default_options.top_p', 0.9),
+            mode: $options['mode'] ?? config('sapiensly-openai-agents.default_options.mode', 'default'),
+            autonomy_level: $options['autonomy_level'] ?? config('sapiensly-openai-agents.default_options.autonomy_level', 'low'),
+            capabilities: $options['capabilities'] ?? config('sapiensly-openai-agents.default_options.capabilities', []),
+            tools: $options['tools'] ?? config('sapiensly-openai-agents.default_options.tools', []),
+            system_prompt: $options['system_prompt'] ?? config('sapiensly-openai-agents.default_options.system_prompt', ''),
+            instructions: $options['instructions'] ?? config('sapiensly-openai-agents.default_options.instructions', ''),
+            max_turns: $options['max_turns'] ?? config('sapiensly-openai-agents.default_options.max_turns', 10),
+            max_input_tokens: $options['max_input_tokens'] ?? config('sapiensly-openai-agents.default_options.max_input_tokens', 4096),
+            max_conversation_tokens: $options['max_conversation_tokens'] ?? config('sapiensly-openai-agents.default_options.max_conversation_tokens', 10000),
+            handoff_target_permission: $options['handoff_target_permission'] ?? config('sapiensly-openai-agents.default_options.handoff_target_permission', null),
         );
     }
 

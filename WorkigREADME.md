@@ -1,8 +1,9 @@
-Agent creation with default options (set in config/agents.php)
+## The Basics
+Agent creation with default options (set in config/sapiensly-openai-agents.php)
 ```php
 use Sapiensly\OpenaiAgents\Facades\Agent;
 
-// Agent creation with default options (set in config/agents.php) and message history
+// Agent creation with default options (set in config/sapiensly-openai-agents.php)
 $agent = Agent::agent();
 $response = $agent->chat('Hello world');
 ```
@@ -34,7 +35,7 @@ You can also change options after agent creation:
 $agent->setTemperature(1)->setInstructions('Always answer in French.');
 $agent->chat('Hello world');
  ```
-``Check what options the agent is currently using:
+Check what options the agent is currently using:
 ```php
 $agent->getOptions();
 /* [
@@ -43,7 +44,12 @@ $agent->getOptions();
   ]
 */
 ```
-Message history is automatically managed, allowing multi-turn conversations:
+
+## Message History Management
+> **💡 Tip**: Use in-memory history for simple scripts or single-session interactions. Use persistent history for web applications, APIs, or any scenario where conversations need to continue across multiple requests.
+
+### In-Memory History (Default)
+Automatic in-memory message history management enables multi-turn conversations:
 ```php
 $agent->chat('What is the capital of France?');
 $response = $agent->chat('What was my last question?');
@@ -51,33 +57,44 @@ echo $response; // Your last question was: "What is the capital of France?"
 ```
 Set a custom limit for the message history:
 ```php
-$agent->setMaxTurns(5); // Limit history to 5 user messages, default is 10 (set in config/agents.php)
+$agent->setMaxTurns(5); // Limit history to 5 user messages, default is 10 (set in config/sapiensly-openai-agents.php)
 ```
 Use getMessages() to retrieve the current conversation's message history:
 ```php
 $messages = $agent->getMessages();
+// Returns: [['role' => 'user', 'content' => 'Hello'], ['role' => 'assistant', 'content' => 'Hi there!']]
 ```
-You can also control token usage by setting a maximum token limit for the input and total tokens used in the conversation. Provided token usage maybe not exactly what you need in your own use case, implement your own logic to calculate token usage based on your needs.
+You can also control token usage by setting a maximum token limit for the input and total tokens used in the conversation.
+
+The provided token usage calculations may not exactly match your specific use case. You can implement custom logic to calculate token usage based on your requirements.
+
 ```php
-$agent->setMaxInputTokens(1000); // Limit input tokens to 1000, default is 4096 (set in config/agents.php)
-$agent->setMaxConversationTokens(5000); // Limit total conversation tokens to 5000, default is 10,000 (set in config/agents.php)
+$agent->setMaxInputTokens(1000); // Limit input tokens to 1000, default is 4096 (set in config/sapiensly-openai-agents.php)
+$agent->setMaxConversationTokens(5000); // Limit total conversation tokens to 5000, default is 10,000 (set in config/sapiensly-openai-agents.php)
 // Check current token usage
 $tokenUsage = $agent->getTokenUsage();
+// Returns: ['input_tokens' => 150, 'output_tokens' => 75, 'total_tokens' => 225]
 ```
-**IMPORTANT:** By default, agents are stateless and keep message history only in memory within the PHP process. No database or cache is used unless you explicitly enable persistence per agent. This preserves current behavior for all existing code.
+### Persistent History (Optional)
+For conversations that need to survive across requests (interact with an agent using API or UI), enable persistence.
+
+Using the `withConversation()` method when creating an agent will create a unique conversation ID that can be used to resume the conversation later. Here is how to do it:
 ```php
 // 1) Create an agent and opt-in to persistence
-$agent = Agent::agent()->withConversation(); // This will create a new conversation with a unique ID, or use the shortcut
+$options = new AgentOptions()
+    ->setTemperature(0.4)
+    ->setInstructions('Always answer in Spanish.');
+$agent = Agent::agent($options)->withConversation(); // This creates a new conversation with a unique ID
 // 2) Use as usual
 $response = $agent->chat('Hello, my name is John');
-// 3) Get the conversation id to resume later
+// 3) Get the conversation id and agent id to resume later
 $conversationId = $agent->getConversationId();
+$agent_id = $agent->getId();
 // if persistence is enabled, you will be able to continue the conversation later (e.g., in a different request)
-$agent = Agent::agent()->withConversation($conversationId);
-$response = $agent->chat('What did I say previously?');
+$rebuilt_agent = Agent::load($agent_id)->withConversation($conversationId);
+$response = $rebuilt_agent->chat('What did I say previously?');
 ```
-
-
+## Response Event
 Agent responses fire an event `AgentResponseGenerated` that you can listen to for logging or other purposes:
 ```php
 use Sapiensly\OpenaiAgents\Events\AgentResponseGenerated;
@@ -87,7 +104,7 @@ Event::listen(AgentResponseGenerated::class, function ($event) {
 });
 ```
 
-### **Level 2: Agent with Tools**
+## **Agent with Tools**
 **Concept:** Agent can use tools (retrieval, functions, APIs, etc).
 
 1. RAG (Retrieval-Augmented Generation)—Allows agents to retrieve relevant documents from a knowledge base.
@@ -95,7 +112,7 @@ Event::listen(AgentResponseGenerated::class, function ($event) {
 use Sapiensly\OpenaiAgents\Facades\Agent
 $agent = Agent::agent();
 $agent->useRAG($vectorStoreId); // $vectorStoreId is ID or name of an existing vector store in your OpenAI account. Array of vector store IDs is supported.
-$agent->useRAG($vectorStoreId, $maxNumResults); // Optional: specify max number of results to return, default set in config/agents.php
+$agent->useRAG($vectorStoreId, $maxNumResults); // Optional: specify max number of results to return, default set in config/sapiensly-openai-agents.php
 $response = $agent->chat('What is our refund policy?');
 ```
 TODO: Document how to create and manage vector stores and files in OpenAI.

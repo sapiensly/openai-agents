@@ -4,6 +4,9 @@ declare(strict_types=1);
 namespace Sapiensly\OpenaiAgents;
 
 use Illuminate\Support\ServiceProvider;
+use OpenAI\Client;
+use OpenAI\Factory;
+use Sapiensly\OpenaiAgents\Console\Commands\CommandServiceProvider;
 use Sapiensly\OpenaiAgents\Handoff\HandoffOrchestrator;
 use Sapiensly\OpenaiAgents\Metrics\MetricsCollector;
 use Sapiensly\OpenaiAgents\Registry\AgentRegistry;
@@ -12,13 +15,11 @@ use Sapiensly\OpenaiAgents\State\ArrayConversationStateManager;
 use Sapiensly\OpenaiAgents\State\ConversationStateManager;
 use Sapiensly\OpenaiAgents\State\RedisConversationStateManager;
 use Sapiensly\OpenaiAgents\Tracing\Tracing;
-use Sapiensly\OpenaiAgents\Console\Commands\DateQuestionCommand;
-use Sapiensly\OpenaiAgents\Console\Commands\ToolTestCommand;
 use Sapiensly\OpenaiAgents\Providers\ModelProviderManager;
 use Sapiensly\OpenaiAgents\Lifecycle\AgentLifecycleManager;
 use Sapiensly\OpenaiAgents\Lifecycle\AgentPool;
 use Sapiensly\OpenaiAgents\Lifecycle\HealthChecker;
-// use Sapiensly\OpenaiAgents\Http\HttpServiceProvider;
+use Sapiensly\OpenaiAgents\AgentDefinitionServiceProvider;
 
 class AgentServiceProvider extends ServiceProvider
 {
@@ -27,6 +28,64 @@ class AgentServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
+        // Merge unified configuration
+        $this->mergeConfigFrom(
+            __DIR__ . '/../config/sapiensly-openai-agents.php',
+            'sapiensly-openai-agents'
+        );
+
+        // Register AgentManager with unified config
+        $this->app->singleton(AgentManager::class, function ($app) {
+            return new AgentManager(config('sapiensly-openai-agents'));
+        });
+
+        // Register the agent facade
+        $this->app->singleton('agent', function ($app) {
+            return $app->make(AgentManager::class);
+        });
+
+        $this->app->singleton('agent.manager', function ($app) {
+            return $app->make(AgentManager::class);
+        });
+
+        // Register Tracing service
+        /*
+        $this->app->singleton(Tracing::class, function () {
+            return new Tracing();
+        });
+        */
+
+        $this->app->singleton(Tracing::class, function ($app) {
+            $config = $app['config']['sapiensly-openai-agents.tracing'];
+            if (!($config['enabled'] ?? false)) {
+                return new Tracing();
+            }
+            return new Tracing($config['processors'] ?? []);
+        });
+
+        // Register OpenAI Client
+        $this->app->singleton(Client::class, function ($app) {
+            return (new Factory())->withApiKey(config('sapiensly-openai-agents.api_key'))->make();
+        });
+
+        // Register ModelProviderManager
+        $this->app->singleton(ModelProviderManager::class, function ($app) {
+            return new ModelProviderManager([
+                'default' => config('sapiensly-openai-agents.provider', 'openai'),
+            ]);
+        });
+
+        // Register lifecycle management services
+        $this->registerLifecycleServices();
+
+        // Register advanced handoff services
+        $this->registerAdvancedHandoffServices();
+
+        // Register other service providers
+        $this->app->register(PersistenceServiceProvider::class);
+        $this->app->register(AgentDefinitionServiceProvider::class);
+
+        /*
         $this->mergeConfigFrom(
             __DIR__ . '/../config/agents.php', 'agents'
         );
@@ -72,6 +131,10 @@ class AgentServiceProvider extends ServiceProvider
 
         // Register HTTP services (test routes, views, etc.)
         // $this->app->register(HttpServiceProvider::class);
+
+        // Register agent definition services
+        $this->app->register(AgentDefinitionServiceProvider::class);
+        */
     }
 
     /**
@@ -81,19 +144,19 @@ class AgentServiceProvider extends ServiceProvider
     {
         // Register AgentPool
         $this->app->singleton(AgentPool::class, function ($app) {
-            $config = $app['config']['agents.lifecycle.pool'] ?? [];
+            $config = $app['config']['sapiensly-openai-agents.lifecycle.pool'] ?? [];
             return new AgentPool($config);
         });
 
         // Register HealthChecker
         $this->app->singleton(HealthChecker::class, function ($app) {
-            $config = $app['config']['agents.lifecycle.health'] ?? [];
+            $config = $app['config']['sapiensly-openai-agents.lifecycle.health'] ?? [];
             return new HealthChecker($config);
         });
 
         // Register AgentLifecycleManager
         $this->app->singleton(AgentLifecycleManager::class, function ($app) {
-            $config = $app['config']['agents.lifecycle'] ?? [];
+            $config = $app['config']['sapiensly-openai-agents.lifecycle'] ?? [];
             return new AgentLifecycleManager(
                 $app->make(AgentManager::class),
                 $config
@@ -113,7 +176,7 @@ class AgentServiceProvider extends ServiceProvider
 
         // Register ConversationStateManager
         $this->app->singleton(ConversationStateManager::class, function ($app) {
-            $config = $app['config']['agents'];
+            $config = $app['config']['sapiensly-openai-agents'];
             $provider = $config['handoff']['state']['provider'] ?? 'array';
 
             return match($provider) {
@@ -128,12 +191,12 @@ class AgentServiceProvider extends ServiceProvider
 
         // Register SecurityManager
         $this->app->singleton(SecurityManager::class, function ($app) {
-            return new SecurityManager($app['config']['agents']);
+            return new SecurityManager($app['config']['sapiensly-openai-agents']);
         });
 
         // Register MetricsCollector
         $this->app->singleton(MetricsCollector::class, function ($app) {
-            $config = $app['config']['agents']['handoff']['metrics'] ?? [];
+            $config = $app['config']['sapiensly-openai-agents']['handoff']['metrics'] ?? [];
             return new MetricsCollector(
                 processors: $config['processors'] ?? [],
                 enabled: $config['enabled'] ?? true
@@ -147,7 +210,7 @@ class AgentServiceProvider extends ServiceProvider
                 $app->make(ConversationStateManager::class),
                 $app->make(SecurityManager::class),
                 $app->make(MetricsCollector::class),
-                $app['config']['agents']
+                $app['config']['sapiensly-openai-agents']
             );
         });
     }
@@ -157,6 +220,20 @@ class AgentServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        // Publish unified configuration
+        $this->publishes([
+            __DIR__ . '/../config/sapiensly-openai-agents.php' => config_path('sapiensly-openai-agents.php'),
+        ], 'sapiensly-openai-agents-config');
+
+        // Publish migrations if they exist
+        $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
+
+        // Optionally publish migrations
+        $this->publishes([
+            __DIR__ . '/../database/migrations/' => database_path('migrations'),
+        ], 'sapiensly-openai-agents-migrations');
+
+        /*
         // Register the persistence provider (bindings + publishables)
         $this->app->register(PersistenceServiceProvider::class);
 
@@ -175,6 +252,14 @@ class AgentServiceProvider extends ServiceProvider
             ], 'agent-persistence-migrations');
         }
 
+        // Publish agent definitions migration
+        $agentDefinitionsMigration = __DIR__ . '/../database/migrations/2024_01_01_000001_create_agent_definitions_table.php';
+        if (file_exists($agentDefinitionsMigration)) {
+            $this->publishes([
+                $agentDefinitionsMigration => database_path('migrations/2024_01_01_000001_create_agent_definitions_table.php'),
+            ], 'agent-definitions-migrations');
+        }
+
 
         // Publicar vistas del dashboard de visualización
         $this->publishes([
@@ -189,6 +274,8 @@ class AgentServiceProvider extends ServiceProvider
                 Console\Commands\AgentTinker::class,
                 Console\Commands\LifecycleCommand::class,
                 Console\Commands\ListFilesCommand::class,
+                Console\Commands\ManageAgentDefinitions::class,
+                Console\Commands\TestAgentPersistence::class,
             ]);
         }
 
@@ -196,5 +283,6 @@ class AgentServiceProvider extends ServiceProvider
         if (class_exists('Sapiensly\OpenaiAgents\Http\HttpServiceProvider')) {
             $this->app->register('Sapiensly\OpenaiAgents\Http\HttpServiceProvider');
         }
+        */
     }
 }

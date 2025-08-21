@@ -3,8 +3,12 @@
 
 namespace Sapiensly\OpenaiAgents;
 
+use InvalidArgumentException;
+use JetBrains\PhpStorm\NoReturn;
+use ReflectionException;
 use Sapiensly\OpenaiAgents\Events\AgentResponseGenerated;
 use Sapiensly\OpenaiAgents\Persistence\PersistentAgentTrait;
+use Sapiensly\OpenaiAgents\Traits\FunctionSchemaGenerator;
 
 use Exception;
 use Illuminate\Support\Facades\Log;
@@ -16,7 +20,7 @@ use Sapiensly\OpenaiAgents\Persistence\Contracts\AgentDefinitionStore;
 
 class Agent
 {
-    use PersistentAgentTrait;
+    use PersistentAgentTrait, FunctionSchemaGenerator;
 
     /**
      * The OpenAI client instance.
@@ -122,6 +126,11 @@ class Agent
      */
     protected int $totalTokens = 0;
 
+    /**
+     * Store the classes that provided functions for persistence.
+     */
+    protected array $functionProviderClasses = [];
+
 
     /**
      * Create a new Agent instance.
@@ -132,14 +141,14 @@ class Agent
      * @param string|null $id
      * @param ToolCacheManager|null $toolCacheManager
      */
-    public function __construct(Client $client, AgentOptions|array|null $options = null, string|null $instructions = null, string|null $id = null, ToolCacheManager|null $toolCacheManager = null)
+    #[NoReturn] public function __construct(Client $client, AgentOptions|array|null $options = null, string|null $instructions = null, string|null $id = null, ToolCacheManager|null $toolCacheManager = null)
     {
-        $agentOptions = new AgentOptions();
-
         if ($options instanceof AgentOptions) {
             $agentOptions = $options;
         } elseif (is_array($options)) {
             $agentOptions = AgentOptions::fromArray($options);
+        }else {
+            $agentOptions = new AgentOptions();
         }
 
         $this->client = $client;
@@ -635,6 +644,94 @@ class Agent
         return $this->mcpManager;
     }
 
+    /**
+     * Save the current agent definition to persistent storage.
+     *
+     * @param string|null $name Optional name to save as (defaults to agent ID)
+     * @return self
+     */
+    public function save(?string $name = null): self
+    {
+        if (!empty($name)) {
+            $this->setId($name);
+        }
+
+        return $this->persistDefinition();
+    }
+
+    /**
+     * Load an agent definition from persistent storage.
+     *
+     * @param string $name The name/ID of the saved agent
+     * @return self|null Returns a new Agent instance or null if not found
+     * @throws Exception
+     */
+    public static function load(string $name): ?self
+    {
+        $store = self::getDefinitionStore();
+        if (!$store) {
+            return null; // Safe fallback when no store is bound
+        }
+
+        $definition = $store->load($name);
+        if (!$definition) {
+            return null;
+        }
+
+        $agent = self::fromDefinition($definition);
+
+
+        // Auto-register function classes from saved data
+        $functionClasses = $definition['tools']['function_classes'] ?? [];
+
+        foreach ($functionClasses as $className) {
+            if (class_exists($className)) {
+                try {
+                    $agent->useFunctions($className);
+                } catch (\Throwable $e) {
+                    // Log error but continue with other classes
+                    Log::warning("Failed to load function class {$className}: " . $e->getMessage());
+                }
+            }
+        }
+
+        return $agent;
+
+    }
+
+    /**
+     * List all saved agent definitions.
+     *
+     * @return array List of saved agent names/IDs
+     */
+    public static function listSaved(): array
+    {
+        $store = self::getDefinitionStore();
+        if (!$store || !method_exists($store, 'list')) {
+            return [];
+        }
+
+        return $store->list();
+    }
+
+
+
+
+
+    /**
+     * Get the definition store instance.
+     */
+    protected static function getDefinitionStore(): ?AgentDefinitionStore
+    {
+        try {
+            return app()->bound(AgentDefinitionStore::class)
+                ? app(AgentDefinitionStore::class)
+                : null;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
 
 
 
@@ -673,11 +770,11 @@ class Agent
         $options ??= [];
         $manager = app(AgentManager::class);
         $agent = $manager->agent($options);
-        $baseInstructions = $instructions ?? config('agents.multi_agent.default_runner.instructions');
+        $baseInstructions = $instructions ?? config('sapiensly-openai-agents.handoff.default_runner_instructions', 'You are a helpful AI assistant that can coordinate with other specialized agents when needed.');
         if ($baseInstructions) {
             $agent->setInstructions($baseInstructions);
         }
-        $agentName = $name ?? config('agents.default_runner.name', 'runner_agent');
+        $agentName = $name ?? config('sapiensly-openai-agents.handoff..default_runner_name', 'runner_agent');
         return new Runner($agent, $agentName);
     }
 
@@ -691,7 +788,7 @@ class Agent
      */
     public static function use(string $agentName): self
     {
-        $config = config("agents.agents.{$agentName}");
+        $config = config("sapiensly-openai-agents.agents.{$agentName}");
         if (!$config) {
             throw new Exception("Agent '{$agentName}' not configured. Please add it to config/agents.php");
         }
@@ -700,9 +797,9 @@ class Agent
 
         // Merge agent-specific options with defaults
         $options = array_merge(
-            config('agents.default', []),
+            config('sapiensly-openai-agents.default_options', []),
             $config['options'] ?? [],
-            ['model' => $config['model'] ?? config('agents.default.model')]
+            ['model' => $config['model'] ?? config('sapiensly-openai-agents.default_options.model')]
         );
 
         // Create AgentOptions instance
@@ -738,9 +835,9 @@ class Agent
         } else {
             // Otherwise, create an AgentOptions instance from the array
             $options = array_merge(
-                config('agents.default', []),
+                config('sapiensly-openai-agents.default_options', []),
                 $config['options'] ?? [],
-                ['model' => $config['model'] ?? config('agents.default.model')]
+                ['model' => $config['model'] ?? config('sapiensly-openai-agents.default_options.model')]
             );
 
             // Level 4: Autonomous Agent config
@@ -1059,6 +1156,50 @@ class Agent
     }
 
     /**
+     * Configure and use web search.
+     * This method sets up the web search configuration based on the provided context size
+     * and location details. It validates the search context size and constructs the search
+     * parameters accordingly.
+     *
+     * @param string|null $search_context_size The desired level of search context: 'high', 'medium', or 'low'. Defaults to 'medium'.
+     * @param string|null $country The user's country for location-specific search, if provided.
+     * @param string|null $city The user's city for location-specific search, if provided.
+     * @return self
+     * @throws InvalidArgumentException If an invalid search_context_size is provided.
+     */
+    public function useWebSearch(string|null $search_context_size = null, string|null $country = null, string|null $city = null): self
+    {
+        $validContextSizes = ['high', 'medium', 'low'];
+        $contextSize = $search_context_size ?? 'medium';
+
+        if (!in_array($contextSize, $validContextSizes, true)) {
+            throw new InvalidArgumentException(
+                "Invalid search_context_size: '{$contextSize}'. Valid options: " . implode(', ', $validContextSizes)
+            );
+        }
+
+        // Build a configuration array
+        $webSearchConfig = [];
+
+        // Only add context size if it's not the default 'medium'
+        if ($contextSize !== 'medium') {
+            $webSearchConfig['search_context_size'] = $contextSize;
+        }
+
+        // Add location configuration if provided
+        if ($country !== null || $city !== null) {
+            $webSearchConfig['user_location']['type'] = "approximate";
+            if ($country !== null) { $webSearchConfig['user_location']['country'] = $country; }
+            if ($city !== null) { $webSearchConfig['user_location']['city'] = $city; }
+        }
+
+        $this->registerWebSearch($webSearchConfig);
+
+        return $this;
+    }
+
+
+    /**
      * Register MCP tools.
      *
      * Accepts:
@@ -1375,7 +1516,6 @@ class Agent
         // Handle implementation registration based on input type
         $this->registerImplementations($functions, $schemas);
 
-
         return $this;
     }
 
@@ -1415,49 +1555,6 @@ class Agent
     }
 
     /**
-     * Configure and use web search.
-     * This method sets up the web search configuration based on the provided context size
-     * and location details. It validates the search context size and constructs the search
-     * parameters accordingly.
-     *
-     * @param string|null $search_context_size The desired level of search context: 'high', 'medium', or 'low'. Defaults to 'medium'.
-     * @param string|null $country The user's country for location-specific search, if provided.
-     * @param string|null $city The user's city for location-specific search, if provided.
-     * @return self
-     * @throws InvalidArgumentException If an invalid search_context_size is provided.
-     */
-    public function useWebSearch(string|null $search_context_size = null, string|null $country = null, string|null $city = null): self
-    {
-        $validContextSizes = ['high', 'medium', 'low'];
-        $contextSize = $search_context_size ?? 'medium';
-
-        if (!in_array($contextSize, $validContextSizes, true)) {
-            throw new InvalidArgumentException(
-                "Invalid search_context_size: '{$contextSize}'. Valid options: " . implode(', ', $validContextSizes)
-            );
-        }
-
-        // Build a configuration array
-        $webSearchConfig = [];
-
-        // Only add context size if it's not the default 'medium'
-        if ($contextSize !== 'medium') {
-            $webSearchConfig['search_context_size'] = $contextSize;
-        }
-
-        // Add location configuration if provided
-        if ($country !== null || $city !== null) {
-            $webSearchConfig['user_location']['type'] = "approximate";
-            if ($country !== null) { $webSearchConfig['user_location']['country'] = $country; }
-            if ($city !== null) { $webSearchConfig['user_location']['city'] = $city; }
-        }
-
-        $this->registerWebSearch($webSearchConfig);
-
-        return $this;
-    }
-
-    /**
      * Register function implementations based on input type
      */
     private function registerImplementations(string|object|array|callable $input, array $schemas): void
@@ -1467,9 +1564,15 @@ class Agent
             $instance = new $input();
             $this->registerClassImplementations($instance, $schemas);
 
+            // Store the class for potential future use
+            $this->functionProviderClasses[] = $input;
+
         } elseif (is_object($input)) {
             // Object instance - register methods
             $this->registerClassImplementations($input, $schemas);
+
+            // Store the class for potential future use
+            $this->functionProviderClasses[] = get_class($input);
 
         } elseif (is_array($input)) {
             // Array can be either schemas or mixed functions
@@ -1483,7 +1586,7 @@ class Agent
 
     /**
      * Call method with argument mapping
-     * @throws ReflectionException
+     * @throws ReflectionException|ReflectionException
      */
     private function callMethodWithArgs(object $instance, string $methodName, array $args): mixed
     {
@@ -1609,7 +1712,7 @@ class Agent
     public function chat(string $message, array|null $toolDefinitions = null, mixed $outputType = null): string
     {
         // Persist user message if enabled
-        if (property_exists($this, 'persistenceEnabled') && $this->persistenceEnabled === true && method_exists($this, 'persistMessage')) {
+        if ($this->persistenceEnabled ?? false) {
             $this->persistMessage('user', $message);
         }
 
@@ -1620,12 +1723,13 @@ class Agent
         $response = $this->chatWithResponsesAPI($message, $toolDefinitions, $outputType);
 
         // Persist assistant response if enabled
-        if (property_exists($this, 'persistenceEnabled') && $this->persistenceEnabled === true && method_exists($this, 'persistMessage')) {
+        if ($this->persistenceEnabled ?? false) {
             $this->persistMessage('assistant', $response, [
-                'token_count' => method_exists($this, 'getTokenUsage') ? $this->getTokenUsage() : null,
-                'model' => $this->options->get('model') ?? null,
+                'token_count' => $this->totalTokens,
+                'model' => $this->options->get('model'),
             ]);
         }
+
 
         return $response;
     }
@@ -1724,19 +1828,22 @@ class Agent
         // d) Remove duplicates by name (the last one wins)
         $seen = [];
         foreach ($mergedToolDefs as $raw) {
-            // Detectar nombre desde distintos formatos
-            $toolName = $raw['name'] ?? ($raw['function']['name'] ?? null);
-            if (!$toolName) {
-                continue;
+            // For OpenAI's native tools (web_search, code_interpreter, file_search)
+            if (isset($raw['type']) && in_array($raw['type'], ['web_search_preview','web_search', 'code_interpreter', 'file_search'])) {
+                $toolKey = $raw['type']; // Usar el tipo como clave
+                $seen[$toolKey] = $raw; // Mantener formato original
+            }
+            // For custom tools or function calls
+            else {
+                $toolName = $raw['name'] ?? ($raw['function']['name'] ?? null);
+                if ($toolName) {
+                    $normalized = $this->normalizeToolForOpenAI($raw);
+                    $seen[$toolName] = $normalized;
+                }
             }
 
-            // Normalizar a formato Responses API: { type: 'function', name, parameters, description? }
-            $normalized = $this->normalizeToolForOpenAI($raw);
-            $seen[$toolName] = $normalized; // sobreescribe duplicados
         }
         $finalTools = array_values($seen);
-
-
 
         // Prepare the parameters for the Responses API
         $params = [
@@ -1827,514 +1934,13 @@ class Agent
             return $response_content;
 
         } catch (Exception $e) {
-            //Log::error("[Agent Debug] Chat With Responses API error: {$e->getMessage()}");
+            Log::error("[Agent Debug] Chat With Responses API error: {$e->getMessage()}");
 
             // EMIT ERROR EVENT
             $this->fireErrorEvent($message, $e);
 
             throw $e;
 
-        }
-    }
-
-    /**
-     * Chat using the Chat Completions API (for function tools)
-     */
-    private function chatWithChatAPI(string $message, array $toolDefinitions, mixed $outputType): string
-    {
-        Log::info("[Agent Debug] Chat with chatWithChatAPI: {$message}");
-
-        $params = [
-            'model' => $this->options->get('model') ?? 'gpt-4o',
-            'messages' => $this->messages,
-            'temperature' => $this->options->get('temperature') ?? null,
-            'top_p' => $this->options->get('top_p') ?? null,
-        ];
-
-        // Add function tools
-        if (!empty($toolDefinitions)) {
-            $tools = [];
-            foreach ($toolDefinitions as $tool) {
-                if (isset($tool['type']) && $tool['type'] === 'function' && isset($tool['function'])) {
-                    $tools[] = $tool;
-                } else {
-                    $parameters = ['type' => 'object', 'properties' => new \stdClass(), 'required' => []];
-                    if (isset($tool['schema'])) {
-                        if (isset($tool['schema']['schema'])) {
-                            $parameters = $tool['schema']['schema'];
-                        } elseif (isset($tool['schema']['type'])) {
-                            $parameters = $tool['schema'];
-                        }
-                    }
-                    if (isset($parameters['properties']) && is_array($parameters['properties']) && empty($parameters['properties'])) {
-                        $parameters['properties'] = new \stdClass();
-                    }
-                    $openaiTool = [
-                        'type' => 'function',
-                        'function' => [
-                            'name' => $tool['name'] ?? 'unknown_function',
-                            'parameters' => $parameters,
-                        ]
-                    ];
-                    if (isset($tool['description'])) {
-                        $openaiTool['function']['description'] = $tool['description'];
-                    } elseif (isset($tool['schema']['description'])) {
-                        $openaiTool['function']['description'] = $tool['schema']['description'];
-                    }
-                    $tools[] = $openaiTool;
-                }
-            }
-            $params['tools'] = $tools;
-            $params['tool_choice'] = 'auto';
-        }
-
-        // Handle output type for structured responses
-        $outputType = $outputType ?? $this->outputType;
-        if ($outputType !== null) {
-            $params['response_format'] = ['type' => 'json_object'];
-        }
-
-        try {
-            $response = $this->client->chat()->create($params);
-
-            $choice = $response['choices'][0];
-            $message = $choice['message'];
-            $finishReason = $choice['finishReason'] ?? $choice['finish_reason'] ?? 'unknown';
-            $content = $message['content'] ?? '';
-
-            // ✅ Buscar tool_calls en múltiples ubicaciones y formatos
-            $toolCalls = $this->extractToolCalls($response, $message, $finishReason);
-
-            if (!empty($toolCalls)) {
-                // Agregar el mensaje del asistente al historial
-                $this->messages[] = ['role' => 'assistant', 'content' => $content, 'tool_calls' => $toolCalls];
-
-                // Procesar cada tool call
-                foreach ($toolCalls as $toolCall) {
-                    $functionName = $toolCall['function']['name'];
-                    $arguments = $toolCall['function']['arguments'];
-
-                    // ✅ Ejecutar la función real registrada
-                    $toolResult = $this->executeToolCall($functionName, $arguments, $toolDefinitions);
-
-                    $this->messages[] = [
-                        'role' => 'tool',
-                        'tool_call_id' => $toolCall['id'],
-                        'content' => $toolResult
-                    ];
-                }
-
-                // Hacer la segunda llamada para obtener la respuesta final
-                $finalParams = [
-                    'model' => $this->options->get('model') ?? 'gpt-4o',
-                    'messages' => $this->messages,
-                    'temperature' => $this->options->get('temperature') ?? null,
-                    'top_p' => $this->options->get('top_p') ?? null,
-                ];
-
-                $finalResponse = $this->client->chat()->create($finalParams);
-                $content = $finalResponse['choices'][0]['message']['content'] ?? '';
-
-            } elseif ($finishReason === 'tool_calls') {
-                Log::error("[Agent Debug] OpenAI indicated tool_calls but no tool_calls data found");
-                return "Error: OpenAI wanted to call a function but the call data was not found.";
-            }
-
-            if (!empty($content)) {
-                $this->messages[] = ['role' => 'assistant', 'content' => $content];
-            }
-
-            return $content;
-
-        } catch (Exception $e) {
-            Log::error("[Agent Debug] Chat API error: {$e->getMessage()}");
-            throw $e;
-        }
-    }
-
-    /**
-     * Process a chat message and stream the AI response in real-time.
-     *
-     * This method handles the conversation flow with streaming, including tool definitions
-     * for function calling when provided. It yields response chunks as they become available.
-     *
-     * @param string $message The user message to process
-     * @param array|null $toolDefinitions Array of tool definitions for function calling
-     * @param mixed|null $outputType Optional output type override
-     * @return iterable<string> Stream of response chunks
-     * @throws Exception
-     */
-    public function chatStreamed(string $message, array|null $toolDefinitions = null, mixed $outputType = null): iterable
-    {
-        Log::info("[Agent Debug] Chat with chatStreamed: {$message}");
-
-        $toolDefinitions ??= [];
-
-        $this->messages[] = ['role' => 'user', 'content' => $message];
-
-        // Check if we have RAG configuration
-        if ($this->ragConfig !== null) {
-            yield from $this->chatStreamedWithRetrieval($message, $toolDefinitions, $outputType);
-            return;
-        }
-
-        // Check if we have OpenAI official tools registered
-        $hasOpenAITools = !empty($this->openAITools);
-
-        if ($hasOpenAITools) {
-            // For now, Responses API doesn't support streaming with official tools
-            // So we'll use the non-streaming version
-            $response = $this->chatWithResponsesAPI($message, $toolDefinitions, $outputType);
-            yield $response;
-            return;
-        } else {
-            // Use Chat Completions API for function tools with streaming
-            yield from $this->chatStreamedWithChatAPI($message, $toolDefinitions, $outputType);
-        }
-    }
-
-    /**
-     * Stream chat with retrieval tool enabled.
-     *
-     * @param string $message The user message to process
-     * @param array $toolDefinitions Array of tool definitions for function calling
-     * @param mixed $outputType Optional output type override
-     * @return iterable The streaming response
-     * @throws Exception
-     */
-    private function chatStreamedWithRetrieval(string $message, array $toolDefinitions, mixed $outputType): iterable
-    {
-        Log::info("[Agent Debug] Chat with chatStreamedWithRetrieval: {$message}");
-
-        if (!empty($toolDefinitions)) {
-            throw new Exception('No se pueden usar tools de tipo function junto con retrieval en la misma llamada.');
-        }
-
-        // Intentar usar el tool de retrieval oficial de OpenAI con streaming
-        try {
-            $params = [
-                'model' => $this->options->get('model') ?? 'gpt-4o',
-                'messages' => $this->messages,
-                'temperature' => $this->options->get('temperature') ?? null,
-                'top_p' => $this->options->get('top_p') ?? null,
-                'stream' => true,
-                'tools' => [
-                    [
-                        'type' => 'retrieval',
-                        'retrieval' => [
-                            'vector_store_id' => $this->ragConfig['vector_store_id'],
-                            'k' => $this->ragConfig['k'],
-                            'r' => $this->ragConfig['r']
-                        ]
-                    ]
-                ],
-                'tool_choice' => 'auto',
-            ];
-
-            if ($outputType !== null) {
-                $params['response_format'] = ['type' => 'json_object'];
-            }
-
-            $stream = $this->client->chat()->createStreamed($params);
-            $fullContent = '';
-            $toolCalls = [];
-
-            foreach ($stream as $response) {
-                $choice = $response['choices'][0];
-                $delta = $choice['delta'] ?? [];
-                $finishReason = $choice['finishReason'] ?? $choice['finish_reason'] ?? null;
-
-                // Handle content streaming
-                if (isset($delta['content'])) {
-                    $content = $delta['content'];
-                    $fullContent .= $content;
-                    yield $content;
-                }
-
-                // Handle tool calls streaming
-                if (isset($delta['tool_calls'])) {
-                    foreach ($delta['tool_calls'] as $toolCallDelta) {
-                        if (isset($toolCallDelta['index'])) {
-                            $index = $toolCallDelta['index'];
-
-                            if (!isset($toolCalls[$index])) {
-                                $toolCalls[$index] = [
-                                    'id' => '',
-                                    'type' => 'function',
-                                    'function' => ['name' => '', 'arguments' => '']
-                                ];
-                            }
-
-                            if (isset($toolCallDelta['id'])) {
-                                $toolCalls[$index]['id'] = $toolCallDelta['id'];
-                            }
-
-                            if (isset($toolCallDelta['function']['name'])) {
-                                $toolCalls[$index]['function']['name'] = $toolCallDelta['function']['name'];
-                            }
-
-                            if (isset($toolCallDelta['function']['arguments'])) {
-                                $toolCalls[$index]['function']['arguments'] .= $toolCallDelta['function']['arguments'];
-                            }
-                        }
-                    }
-                }
-
-                // If finished with tool calls, execute them
-                if ($finishReason === 'tool_calls' && !empty($toolCalls)) {
-                    // Add assistant message with tool calls
-                    $this->messages[] = ['role' => 'assistant', 'content' => $fullContent, 'tool_calls' => $toolCalls];
-
-                    // Execute tool calls
-                    foreach ($toolCalls as $toolCall) {
-                        $functionName = $toolCall['function']['name'];
-                        $arguments = $toolCall['function']['arguments'];
-
-                        $toolResult = $this->executeToolCall($functionName, $arguments, $toolDefinitions);
-
-                        $this->messages[] = [
-                            'role' => 'tool',
-                            'tool_call_id' => $toolCall['id'],
-                            'content' => $toolResult
-                        ];
-                    }
-
-                    // Make second call for final response
-                    $finalParams = [
-                        'model' => $this->options->get('model') ?? 'gpt-4o',
-                        'messages' => $this->messages,
-                        'temperature' => $this->options->get('temperature') ?? null,
-                        'top_p' => $this->options->get('top_p') ?? null,
-                        'stream' => true,
-                    ];
-
-                    $finalStream = $this->client->chat()->createStreamed($finalParams);
-
-                    foreach ($finalStream as $finalResponse) {
-                        $finalChoice = $finalResponse['choices'][0];
-                        $finalDelta = $finalChoice['delta'] ?? [];
-
-                        if (isset($finalDelta['content'])) {
-                            $content = $finalDelta['content'];
-                            yield $content;
-                        }
-                    }
-                }
-            }
-
-            // Add final message to history if not already added
-            if (!empty($fullContent) && $finishReason !== 'tool_calls') {
-                $this->messages[] = ['role' => 'assistant', 'content' => $fullContent];
-            }
-
-        } catch (Exception $e) {
-            // Fallback a RAG tradicional en streaming
-            if (strpos($e->getMessage(), "tools[0].function") !== false || strpos($e->getMessage(), "Missing required parameter") !== false) {
-                $results = $this->runTool('vector_store', 'search', [
-                    'vector_store_id' => $this->ragConfig['vector_store_id'],
-                    'query' => $message,
-                    'k' => $this->ragConfig['k'],
-                    'r' => $this->ragConfig['r']
-                ]);
-                $data = json_decode($results, true);
-                $context = '';
-                if (isset($data['success']) && $data['success'] && isset($data['results'])) {
-                    foreach ($data['results'] as $i => $doc) {
-                        $text = $doc['text'] ?? '';
-                        // If it's an array of objects with 'text', concatenate the texts
-                        if (is_array($text)) {
-                            // If it's an array of objects with 'text'
-                            if (isset($text[0]['text'])) {
-                                $text = implode("\n\n", array_map(fn($t) => $t['text'] ?? '', $text));
-                            } else {
-                                $text = implode("\n", $text);
-                            }
-                        }
-                        $context .= "[Doc #" . ($i+1) . "]\n" . $text . "\n";
-                    }
-                }
-                $contextMsg = "CONTEXT:\n" . $context . "\n---\n";
-                $this->messages[] = ['role' => 'system', 'content' => $contextMsg];
-                $this->messages[] = ['role' => 'user', 'content' => $message];
-                $params = [
-                    'model' => $this->options->get('model') ?? 'gpt-4o',
-                    'messages' => $this->messages,
-                    'temperature' => $this->options->get('temperature') ?? null,
-                    'top_p' => $this->options->get('top_p') ?? null,
-                    'stream' => true,
-                ];
-                if ($outputType !== null) {
-                    $params['response_format'] = ['type' => 'json_object'];
-                }
-                $stream = $this->client->chat()->createStreamed($params);
-                foreach ($stream as $response) {
-                    $choice = $response['choices'][0];
-                    $delta = $choice['delta'] ?? [];
-                    if (isset($delta['content'])) {
-                        yield $delta['content'];
-                    }
-                }
-            } else {
-                throw $e;
-            }
-        }
-        return;
-    }
-
-    /**
-     * Stream chat using the Chat Completions API (for function tools)
-     */
-    private function chatStreamedWithChatAPI(string $message, array $toolDefinitions, mixed $outputType): iterable
-    {
-        Log::info("[Agent Debug] Chat with chatStreamedWithRetrieval: {$message}");
-
-        $params = [
-            'model' => $this->options->get('model') ?? 'gpt-4o',
-            'messages' => $this->messages,
-            'temperature' => $this->options->get('temperature') ?? null,
-            'top_p' => $this->options->get('top_p') ?? null,
-            'stream' => true, // Enable streaming
-        ];
-
-        // Add function tools
-        if (!empty($toolDefinitions)) {
-            $tools = [];
-            foreach ($toolDefinitions as $tool) {
-                if (isset($tool['type']) && $tool['type'] === 'function' && isset($tool['function'])) {
-                    $tools[] = $tool;
-                } else {
-                    $parameters = ['type' => 'object', 'properties' => new \stdClass(), 'required' => []];
-                    if (isset($tool['schema'])) {
-                        if (isset($tool['schema']['schema'])) {
-                            $parameters = $tool['schema']['schema'];
-                        } elseif (isset($tool['schema']['type'])) {
-                            $parameters = $tool['schema'];
-                        }
-                    }
-                    if (isset($parameters['properties']) && is_array($parameters['properties']) && empty($parameters['properties'])) {
-                        $parameters['properties'] = new \stdClass();
-                    }
-                    $openaiTool = [
-                        'type' => 'function',
-                        'function' => [
-                            'name' => $tool['name'] ?? 'unknown_function',
-                            'parameters' => $parameters,
-                        ]
-                    ];
-                    if (isset($tool['description'])) {
-                        $openaiTool['function']['description'] = $tool['description'];
-                    } elseif (isset($tool['schema']['description'])) {
-                        $openaiTool['function']['description'] = $tool['description'];
-                    }
-                    $tools[] = $openaiTool;
-                }
-            }
-            $params['tools'] = $tools;
-            $params['tool_choice'] = 'auto';
-        }
-
-        // Handle output type for structured responses
-        $outputType = $outputType ?? $this->outputType;
-        if ($outputType !== null) {
-            $params['response_format'] = ['type' => 'json_object'];
-        }
-
-        try {
-            $stream = $this->client->chat()->createStreamed($params);
-            $fullContent = '';
-            $toolCalls = [];
-
-            foreach ($stream as $response) {
-                $choice = $response['choices'][0];
-                $delta = $choice['delta'] ?? [];
-                $finishReason = $choice['finishReason'] ?? $choice['finish_reason'] ?? null;
-
-                // Handle content streaming
-                if (isset($delta['content'])) {
-                    $content = $delta['content'];
-                    $fullContent .= $content;
-                    yield $content;
-                }
-
-                // Handle tool calls streaming
-                if (isset($delta['tool_calls'])) {
-                    foreach ($delta['tool_calls'] as $toolCallDelta) {
-                        if (isset($toolCallDelta['index'])) {
-                            $index = $toolCallDelta['index'];
-
-                            if (!isset($toolCalls[$index])) {
-                                $toolCalls[$index] = [
-                                    'id' => '',
-                                    'type' => 'function',
-                                    'function' => ['name' => '', 'arguments' => '']
-                                ];
-                            }
-
-                            if (isset($toolCallDelta['id'])) {
-                                $toolCalls[$index]['id'] = $toolCallDelta['id'];
-                            }
-
-                            if (isset($toolCallDelta['function']['name'])) {
-                                $toolCalls[$index]['function']['name'] = $toolCallDelta['function']['name'];
-                            }
-
-                            if (isset($toolCallDelta['function']['arguments'])) {
-                                $toolCalls[$index]['function']['arguments'] .= $toolCallDelta['function']['arguments'];
-                            }
-                        }
-                    }
-                }
-
-                // If finished with tool calls, execute them
-                if ($finishReason === 'tool_calls' && !empty($toolCalls)) {
-                    // Add assistant message with tool calls
-                    $this->messages[] = ['role' => 'assistant', 'content' => $fullContent, 'tool_calls' => $toolCalls];
-
-                    // Execute tool calls
-                    foreach ($toolCalls as $toolCall) {
-                        $functionName = $toolCall['function']['name'];
-                        $arguments = $toolCall['function']['arguments'];
-
-                        $toolResult = $this->executeToolCall($functionName, $arguments, $toolDefinitions);
-
-                        $this->messages[] = [
-                            'role' => 'tool',
-                            'tool_call_id' => $toolCall['id'],
-                            'content' => $toolResult
-                        ];
-                    }
-
-                    // Make second call for final response
-                    $finalParams = [
-                        'model' => $this->options->get('model') ?? 'gpt-4o',
-                        'messages' => $this->messages,
-                        'temperature' => $this->options->get('temperature') ?? null,
-                        'top_p' => $this->options->get('top_p') ?? null,
-                        'stream' => true,
-                    ];
-
-                    $finalStream = $this->client->chat()->createStreamed($finalParams);
-
-                    foreach ($finalStream as $finalResponse) {
-                        $finalChoice = $finalResponse['choices'][0];
-                        $finalDelta = $finalChoice['delta'] ?? [];
-
-                        if (isset($finalDelta['content'])) {
-                            $content = $finalDelta['content'];
-                            yield $content;
-                        }
-                    }
-                }
-            }
-
-            // Add final message to history if not already added
-            if (!empty($fullContent) && $finishReason !== 'tool_calls') {
-                $this->messages[] = ['role' => 'assistant', 'content' => $fullContent];
-            }
-
-        } catch (Exception $e) {
-            Log::error("[Agent Debug] Chat streaming API error: {$e->getMessage()}");
-            throw $e;
         }
     }
 
@@ -2647,8 +2253,8 @@ class Agent
      */
     private function getLimitedMessages(int|null $maxTurns = null, int|null $maxInputTokens = null): array
     {
-        $maxTurns ??= config('agents.default.max_turns', 10);
-        $maxInputTokens = $maxInputTokens ?? config('agents.default.max_input_tokens', 4096);
+        $maxTurns ??= config('sapiensly-openai-agents.default_options.max_turns', 10);
+        $maxInputTokens = $maxInputTokens ?? config('sapiensly-openai-agents.default_options.max_input_tokens', 4096);
         if (empty($this->messages)) {
             return [];
         }
@@ -2944,6 +2550,9 @@ class Agent
         // Extract function schemas already registered as tools
         $functionSchemas = array_values(array_filter($tools, fn($t) => ($t['type'] ?? null) === 'function'));
 
+        // Get function provider classes (if any)
+        $functionClasses = $this->getFunctionProviderClasses($functionSchemas);
+
         // Extract web search config if present
         $webSearch = null;
         foreach ($tools as $t) {
@@ -2976,6 +2585,7 @@ class Agent
             'tools' => [
                 'rag' => $rag,
                 'functions' => $functionSchemas,
+                'function_classes' => $functionClasses,
                 'web_search' => $webSearch,
                 'mcp' => $mcp,
             ],
@@ -2986,12 +2596,24 @@ class Agent
     }
 
     /**
+     * Get the classes that provided the current functions.
+     *
+     * @param array $functionSchemas
+     * @return array
+     */
+    private function getFunctionProviderClasses(array $functionSchemas): array
+    {
+        return array_unique($this->functionProviderClasses);
+    }
+
+
+    /**
      * Recreate an Agent from a persisted definition.
      */
     public static function fromDefinition(array $def): self
     {
         $options = $def['options'] ?? [];
-        $agent = \Sapiensly\OpenaiAgents\Facades\Agent::agent($options);
+        $agent = Facades\Agent::agent($options);
         if (!empty($def['id'])) {
             $agent->setId($def['id']);
         }
