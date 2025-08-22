@@ -233,6 +233,9 @@ class AgentServiceProvider extends ServiceProvider
             __DIR__ . '/../database/migrations/' => database_path('migrations'),
         ], 'sapiensly-openai-agents-migrations');
 
+        // Register the command service provider
+        $this->app->register(CommandServiceProvider::class);
+
         /*
         // Register the persistence provider (bindings + publishables)
         $this->app->register(PersistenceServiceProvider::class);

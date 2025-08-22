@@ -15,6 +15,7 @@ class CommandServiceProvider extends ServiceProvider
             $this->commands([
                 DateQuestionCommand::class,
                 VectorStoreCommand::class,
+                TestMcpSseCommand::class
             ]);
         }
     }

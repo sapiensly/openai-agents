@@ -7,6 +7,8 @@ use InvalidArgumentException;
 use JetBrains\PhpStorm\NoReturn;
 use ReflectionException;
 use Sapiensly\OpenaiAgents\Events\AgentResponseGenerated;
+use Sapiensly\OpenaiAgents\MCP\MCPManager;
+use Sapiensly\OpenaiAgents\MCP\MCPTool;
 use Sapiensly\OpenaiAgents\Persistence\PersistentAgentTrait;
 use Sapiensly\OpenaiAgents\Traits\FunctionSchemaGenerator;
 
@@ -1211,6 +1213,7 @@ class Agent
      * @param string|null $serverName Optional server name if not provided inside definition
      * @param array $options Options for proxy tool creation (e.g., ['mode' => 'call'|'stream'])
      * @return self
+     * @throws ReflectionException
      */
     public function registerMCPTool(MCPTool|array $toolOrDef, ?string $serverName = null, array $options = []): self
     {
@@ -1442,6 +1445,26 @@ class Agent
     {
         return $this->exposeMCP($serverName, $filters, $defaults);
     }
+
+    /**
+     * Stream MCP resource with callback support.
+     *
+     * @param string $serverName The server name
+     * @param string $resourceName The resource name
+     * @param array $parameters Resource parameters
+     * @param callable|null $callback Optional callback function for streaming chunks
+     * @return void
+     * @throws Exception
+     */
+    public function streamMCPResourceWithCallback(string $serverName, string $resourceName, array $parameters = [], ?callable $callback = null): void
+    {
+        if (!$this->mcpManager) {
+            throw new Exception('MCP Manager not initialized');
+        }
+
+        $this->mcpManager->streamResourceWithCallback($serverName, $resourceName, $parameters, $callback);
+    }
+
 
     /**
      * Use an existing RAG vector store by ID or name.

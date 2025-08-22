@@ -96,8 +96,14 @@ class MCPServer
             $timeout = $config['timeout'] ?? 30;
             $maxRetries = $config['max_retries'] ?? 3;
             $enableLogging = $config['enable_logging'] ?? true;
+            $format = $config['format'] ?? 'auto';
+
+            $clientUrl = $url;
+            if (isset($config['sse_url']) && !empty($config['sse_url'])) {
+                $clientUrl = $config['sse_url'];
+            }
             
-            $this->httpClient = new MCPClient($url, $headers, $timeout, $maxRetries, $enableLogging);
+            $this->httpClient = new MCPClient($clientUrl, $headers, $timeout, $maxRetries, $enableLogging, $format);
         }
         
         if (isset($config['enabled'])) {

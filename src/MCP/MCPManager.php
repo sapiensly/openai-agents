@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Sapiensly\OpenaiAgents\MCP;
 
+use Exception;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -155,7 +156,7 @@ class MCPManager
     {
         $server = $this->getServer($serverName);
         if (!$server) {
-            throw new \Exception("Server '{$serverName}' not found");
+            throw new Exception("Server '{$serverName}' not found");
         }
 
         $server->addResource($resource);
@@ -270,11 +271,11 @@ class MCPManager
     {
         $tool = $this->getTool($toolName);
         if (!$tool) {
-            throw new \Exception("Tool '{$toolName}' not found");
+            throw new Exception("Tool '{$toolName}' not found");
         }
 
         if (!$tool->isEnabled()) {
-            throw new \Exception("Tool '{$toolName}' is disabled");
+            throw new Exception("Tool '{$toolName}' is disabled");
         }
 
         $this->stats['total_calls']++;
@@ -292,7 +293,7 @@ class MCPManager
             }
 
             return $result;
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             $this->stats['failed_calls']++;
 
             if ($this->config['enable_logging']) {
@@ -317,7 +318,7 @@ class MCPManager
     {
         $server = $this->getServer($serverName);
         if (!$server) {
-            throw new \Exception("Server '{$serverName}' not found");
+            throw new Exception("Server '{$serverName}' not found");
         }
 
         $discoveredResources = $server->discoverResources();
@@ -561,7 +562,7 @@ class MCPManager
     {
         $server = $this->getServer($serverName);
         if (!$server) {
-            throw new \Exception("Server '{$serverName}' not found");
+            throw new Exception("Server '{$serverName}' not found");
         }
 
         return $server->streamResource($resourceName, $parameters);
@@ -579,7 +580,7 @@ class MCPManager
     {
         $server = $this->getServer($serverName);
         if (!$server) {
-            throw new \Exception("Server '{$serverName}' not found");
+            throw new Exception("Server '{$serverName}' not found");
         }
 
         return $server->subscribeToEvents($eventType, $filters);
@@ -591,21 +592,23 @@ class MCPManager
      * @param string $serverName The server name
      * @param string $resourceName The resource name
      * @param array $parameters The resource parameters
-     * @param callable $callback Callback function for each chunk
+     * @param callable|null $callback Callback function for each chunk
      * @return void
+     * @throws Exception
      */
-    public function streamResourceWithCallback(string $serverName, string $resourceName, array $parameters = [], callable $callback = null): void
+    public function streamResourceWithCallback(string $serverName, string $resourceName, array $parameters = [], ?callable $callback = null): void
     {
         $server = $this->getServer($serverName);
         if (!$server) {
-            throw new \Exception("Server '{$serverName}' not found");
+            throw new Exception("Server '{$serverName}' not found");
         }
 
         foreach ($server->streamResource($resourceName, $parameters) as $chunk) {
-            if ($callback) {
+            if ($callback !== null) {
                 $callback($chunk);
             }
         }
+
     }
 
     /**
@@ -616,7 +619,7 @@ class MCPManager
     public function getServersWithSSE(): array
     {
         $sseServers = [];
-        
+
         foreach ($this->servers as $serverName => $server) {
             if ($server->isEnabled() && $server->supportsSSE()) {
                 $sseServers[$serverName] = $server;
@@ -656,4 +659,4 @@ class MCPManager
 
         return $stats;
     }
-} 
+}

@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Sapiensly\OpenaiAgents;
 
+use Exception;
 use Fiber;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Log;
@@ -279,7 +280,7 @@ class Runner
     public function executeMCPTool(string $toolName, array $parameters = [])
     {
         if (!$this->mcpManager) {
-            throw new \Exception('MCP manager not initialized');
+            throw new Exception('MCP manager not initialized');
         }
 
         return $this->mcpManager->executeTool($toolName, $parameters);
@@ -324,7 +325,7 @@ class Runner
     public function streamMCPResource(string $serverName, string $resourceName, array $parameters = []): iterable
     {
         if (!$this->mcpManager) {
-            throw new \Exception('MCP Manager not initialized');
+            throw new Exception('MCP Manager not initialized');
         }
 
         return $this->mcpManager->streamResource($serverName, $resourceName, $parameters);
@@ -341,29 +342,31 @@ class Runner
     public function subscribeToMCPEvents(string $serverName, string $eventType, array $filters = []): iterable
     {
         if (!$this->mcpManager) {
-            throw new \Exception('MCP Manager not initialized');
+            throw new Exception('MCP Manager not initialized');
         }
 
         return $this->mcpManager->subscribeToEvents($serverName, $eventType, $filters);
     }
 
     /**
-     * Stream MCP resource with callback for real-time processing.
+     * Stream MCP resource with callback.
      *
      * @param string $serverName The server name
      * @param string $resourceName The resource name
      * @param array $parameters The resource parameters
-     * @param callable $callback Callback function for each chunk
+     * @param callable|null $callback The callback function
      * @return void
+     * @throws Exception
      */
-    public function streamMCPResourceWithCallback(string $serverName, string $resourceName, array $parameters = [], callable $callback = null): void
+    public function streamMCPResourceWithCallback(string $serverName, string $resourceName, array $parameters = [], ?callable $callback = null): void
     {
         if (!$this->mcpManager) {
-            throw new \Exception('MCP Manager not initialized');
+            throw new Exception('MCP Manager not initialized');
         }
 
         $this->mcpManager->streamResourceWithCallback($serverName, $resourceName, $parameters, $callback);
     }
+
 
     /**
      * Get all MCP servers that support SSE.
