@@ -69,10 +69,10 @@ class MCPServer
     {
         $this->name = $name;
         $this->url = $url;
-        
+
         $transport = $config['transport'] ?? 'http';
         $this->transport = $transport;
-        
+
         if ($transport === 'stdio') {
             // STDIO transport
             $command = $config['command'] ?? $url;
@@ -80,8 +80,8 @@ class MCPServer
             $workingDirectory = $config['working_directory'] ?? '';
             $environment = $config['environment'] ?? [];
             $timeout = $config['timeout'] ?? 30;
-            $enableLogging = $config['enable_logging'] ?? true;
-            
+            $enableLogging = $config['enable_logging'] ?? false;
+
             $this->stdioClient = new MCPSTDIOClient(
                 $command,
                 $arguments,
@@ -95,25 +95,38 @@ class MCPServer
             $headers = $config['headers'] ?? [];
             $timeout = $config['timeout'] ?? 30;
             $maxRetries = $config['max_retries'] ?? 3;
-            $enableLogging = $config['enable_logging'] ?? true;
-            $format = $config['format'] ?? 'auto';
+            $enableLogging = $config['enable_logging'] ?? false;
 
-            $clientUrl = $url;
-            if (isset($config['sse_url']) && !empty($config['sse_url'])) {
-                $clientUrl = $config['sse_url'];
+            $this->httpClient = new MCPClient($url, $headers, $timeout, $maxRetries, $enableLogging);
+
+            // Apply HTTP client extra configuration
+            if (!empty($config['paths'])) {
+                $this->httpClient->setPaths($config['paths']);
             }
-            
-            $this->httpClient = new MCPClient($clientUrl, $headers, $timeout, $maxRetries, $enableLogging, $format);
+            if (!empty($config['full_stream_url'])) {
+                $this->httpClient->setFullStreamUrl($config['full_stream_url']);
+            } elseif (!empty($config['sse_url'])) {
+                // alias support
+                $this->httpClient->setFullStreamUrl($config['sse_url']);
+                $this->httpClient->setStreamMethod('GET');
+                $this->httpClient->setStreamSendJsonBody(false);
+            }
+            if (!empty($config['stream_method'])) {
+                $this->httpClient->setStreamMethod($config['stream_method']);
+            }
+            if (array_key_exists('stream_send_json_body', $config)) {
+                $this->httpClient->setStreamSendJsonBody((bool)$config['stream_send_json_body']);
+            }
         }
-        
+
         if (isset($config['enabled'])) {
             $this->enabled = $config['enabled'];
         }
-        
+
         if (isset($config['metadata'])) {
             $this->metadata = $config['metadata'];
         }
-        
+
         if (isset($config['capabilities'])) {
             $this->capabilities = $config['capabilities'];
         }
@@ -367,7 +380,7 @@ class MCPServer
             } else {
                 $discoveredResources = $client->discoverResources();
             }
-            
+
             // Convert discovered resources to MCPResource objects
             foreach ($discoveredResources as $resourceData) {
                 if (isset($resourceData['name'])) {
@@ -375,12 +388,6 @@ class MCPServer
                     $this->addResource($resource);
                 }
             }
-
-            Log::info('MCP server resource discovery completed', [
-                'server' => $this->name,
-                'transport' => $this->transport,
-                'resources_found' => count($discoveredResources)
-            ]);
 
             return $discoveredResources;
         } catch (\Exception $e) {
@@ -605,7 +612,7 @@ class MCPServer
         }
 
         $stats = [];
-        
+
         if ($this->isHTTP()) {
             $stats = $client->getServerStats();
         } else {
@@ -685,7 +692,7 @@ class MCPServer
     {
         $client = $this->getClient();
         $clientData = $client ? $client->toArray() : [];
-        
+
         return [
             'name' => $this->name,
             'url' => $this->url,
@@ -707,10 +714,29 @@ class MCPServer
     public static function fromArray(array $data): self
     {
         $config = $data['config'] ?? [];
+
+        // Merge client serialization into config for faithful hydration
+        if (!empty($data['client']) && is_array($data['client'])) {
+            $client = $data['client'];
+            $config = array_merge($config, [
+                'headers' => $client['headers'] ?? [],
+                'timeout' => $client['timeout'] ?? null,
+                'max_retries' => $client['max_retries'] ?? null,
+                'enable_logging' => $client['enable_logging'] ?? false,
+            ]);
+            if (isset($client['paths'])) { $config['paths'] = $client['paths']; }
+            if (isset($client['full_stream_url'])) { $config['full_stream_url'] = $client['full_stream_url']; }
+            if (isset($client['stream_method'])) { $config['stream_method'] = $client['stream_method']; }
+            if (isset($client['stream_send_json_body'])) { $config['stream_send_json_body'] = $client['stream_send_json_body']; }
+        }
+
         if (isset($data['transport'])) {
             $config['transport'] = $data['transport'];
         }
-        
+
+        if (!empty($data['capabilities'])) { $config['capabilities'] = $data['capabilities']; }
+        if (!empty($data['metadata'])) { $config['metadata'] = $data['metadata']; }
+
         $server = new self($data['name'], $data['url'], $config);
 
         if (isset($data['enabled'])) {
@@ -734,4 +760,22 @@ class MCPServer
 
         return $server;
     }
-} 
+
+    public function debugConnection(array $options = []): array
+    {
+        if (!$this->enabled) {
+            return [ 'enabled' => false, 'error' => 'Server is disabled' ];
+        }
+        $client = $this->getClient();
+        if (!$client || !method_exists($client, 'debug')) {
+            return [ 'enabled' => true, 'error' => 'Client not available or debug() not implemented' ];
+        }
+        $report = $client->debug($options);
+        $report['server'] = [
+            'name' => $this->name,
+            'url' => $this->url,
+            'transport' => $this->transport,
+        ];
+        return $report;
+    }
+}

@@ -13,9 +13,7 @@ class CommandServiceProvider extends ServiceProvider
     {
         if ($this->app->runningInConsole()) {
             $this->commands([
-                DateQuestionCommand::class,
                 VectorStoreCommand::class,
-                TestMcpSseCommand::class
             ]);
         }
     }

@@ -132,7 +132,7 @@ The `useFunctions` method accepts four different parameter types:
 3. Web Search—Allows agents to search the web for recent information.
 ```php
 $agent->useWebSearch();
-$response = $agent->chat('Search in web latest news fo AAPL stock');
+$response = $agent->chat('Search in web latest news for AAPL stock');
 ```
 You can customize web search behavior by passing optional parameters to the `useWebSearch` method:
 ```php
@@ -150,8 +150,8 @@ $agent->useMCPServer([
     'url' => 'https://your-mcp-server.com/mcp', // URL of your MCP server
 ]);
 // 2. Expose tools that the agent can use from the MCP server
-// You can expose all tools and resources available on the MCP server
-$agent->exposeMCP('my_mcp_server');
+// You can expose all tools and resources available on the MCP server 
+$agent->exposeMCP('my_mcp_server')->apply();
 // Or, alternatively, you can use filters to expose only specific tools or resources
 $agent->exposeMCP('my_mcp_server')
     ->sources(['tools', 'resources']) // 'tools' (JSON-RPC) TODO: Here check!

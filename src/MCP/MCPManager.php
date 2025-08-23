@@ -62,8 +62,8 @@ class MCPManager
     public function __construct(array $config = [])
     {
         $this->config = array_merge([
-            'enable_logging' => true,
-            'auto_discover' => true,
+            'enable_logging' => false,
+            'auto_discover' => false,
             'connection_timeout' => 30,
             'max_retries' => 3,
         ], $config);
@@ -87,6 +87,19 @@ class MCPManager
             $this->discoverServerResources($name);
         }
 
+        $this->updateStats();
+        return $this;
+    }
+
+    /**
+     * Add an already constructed MCPServer instance.
+     */
+    public function addServerInstance(MCPServer $server): self
+    {
+        $this->servers[$server->getName()] = $server;
+        if ($this->config['auto_discover'] ?? false) {
+            $this->discoverServerResources($server->getName());
+        }
         $this->updateStats();
         return $this;
     }
@@ -587,29 +600,30 @@ class MCPManager
     }
 
     /**
-     * Stream resource with callback for real-time processing.
+     * Stream a resource with callback for real-time processing.
      *
      * @param string $serverName The server name
      * @param string $resourceName The resource name
-     * @param array $parameters The resource parameters
+     * @param array|null $parameters The resource parameters
      * @param callable|null $callback Callback function for each chunk
      * @return void
      * @throws Exception
      */
-    public function streamResourceWithCallback(string $serverName, string $resourceName, array $parameters = [], ?callable $callback = null): void
+    public function streamResourceWithCallback(string $serverName, string $resourceName, array|null $parameters = null, callable|null $callback = null): void
     {
+        $parameters ??= [];
         $server = $this->getServer($serverName);
         if (!$server) {
             throw new Exception("Server '{$serverName}' not found");
         }
 
         foreach ($server->streamResource($resourceName, $parameters) as $chunk) {
-            if ($callback !== null) {
+            if ($callback) {
                 $callback($chunk);
             }
         }
-
     }
+
 
     /**
      * Get all servers that support SSE.
@@ -658,5 +672,14 @@ class MCPManager
         }
 
         return $stats;
+    }
+
+    public function debugServer(string $serverName, array $options = []): array
+    {
+        $server = $this->getServer($serverName);
+        if (!$server) {
+            return [ 'error' => "Server '{$serverName}' not found" ];
+        }
+        return $server->debugConnection($options);
     }
 }

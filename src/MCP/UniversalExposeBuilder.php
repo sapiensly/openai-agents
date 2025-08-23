@@ -55,6 +55,9 @@ class UniversalExposeBuilder
         return $this;
     }
 
+    /**
+     * @throws \ReflectionException
+     */
     public function apply(): Agent
     {
         $manager = $this->agent->getMCPManager();
@@ -73,7 +76,7 @@ class UniversalExposeBuilder
             try {
                 $tools = $server->getClient()->listTools();
             } catch (\Throwable $e) {
-                // ignorar si no soporta JSON-RPC
+                // ignore if JSON-RPC not supported
             }
 
             foreach ($tools as $t) {
@@ -117,14 +120,14 @@ class UniversalExposeBuilder
                     }
                 );
 
-                // Registrar también en el Agent (habilita function_calling en chat)
+                // Register MCPTool in the Agent (enables function_calling in chat)
                 $this->agent->registerMCPTool($tool, $server->getName());
             }
         }
 
         // 2) Resources via REST (/resources + /call)
         if (in_array('resources', $this->sources, true)) {
-            // Evitar discovery duplicado: si ya hay recursos o ya intentamos, no repetir
+            // Avoid duplicated discovery: if there are already resources or we have already attempted, do not repeat
             $resources = $server->getResources();
             $meta = $server->getMetadata();
             $alreadyAttempted = (bool)($meta['resources_discovery_attempted'] ?? false);
@@ -133,26 +136,23 @@ class UniversalExposeBuilder
                 try {
                     $server->discoverResources();
                 } catch (\Throwable $e) {
-                    // ignorar fallos/405 y marcar intento
+                    // ignore discovery failures
                 } finally {
-                    // marcar intento para no repetir discovery en esta ejecución
+                    // mark as attempted to avoid future retries
                     $server->addMetadata('resources_discovery_attempted', true);
                 }
                 $resources = $server->getResources();
             }
 
-            // Si no hay recursos, no hacemos nada más
+            // if no resources found, skip
             if (!empty($resources)) {
                 foreach ($resources as $resourceObj) {
-                    // resourceObj es MCPResource
+                    // resourceObj is MCPResource
                     $name = $resourceObj->getName();
                     if (!$this->passesFilters($name)) { continue; }
 
                     $finalName = $this->prefix . $name;
-                    $desc = $resourceObj->getDescription() ?? '';
                     $uri = $resourceObj->getUri() ?? '/';
-                    $params = $resourceObj->getParameters() ?? [];
-
                     $resolvedMode = $this->resolveMode($server, $uri);
 
                     if ($resolvedMode === 'stream') {
@@ -180,11 +180,29 @@ class UniversalExposeBuilder
                         );
                     }
 
-                    // Registrar también en el Agent (habilita function_calling en chat)
+                    // Register MCPTool in the Agent (enables function_calling in chat)
                     $this->agent->registerMCPTool($tool, $server->getName());
                 }
             }
         }
+
+        // 3) Record the exposure for persistence/hydration
+        $filters = [
+            'allow' => $this->allow,
+            'deny' => $this->deny,
+            'prefix' => $this->prefix,
+            'sources' => $this->sources,
+        ];
+        $defaults = [ 'mode' => $this->mode ];
+
+        // Optionally capture exposed tool names for this server after apply()
+        try {
+            $exposed = array_keys($this->agent->listMCPTools($this->serverName, true, true));
+        } catch (\Throwable $e) {
+            $exposed = [];
+        }
+
+        $this->agent->recordMCPExposure($this->serverName, $filters, $defaults, $exposed);
 
         return $this->agent;
     }

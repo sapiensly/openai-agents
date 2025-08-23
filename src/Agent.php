@@ -1076,7 +1076,7 @@ class Agent
             [
                 'type' => 'file_search',
                 'vector_store_ids' => $this->ragConfig['vector_store_ids'],
-                'max_num_results' => $this->ragConfig['max_num_results'] ?? config('agent.rag.max_num_results', 5),
+                'max_num_results' => $this->ragConfig['max_num_results'] ?? config('sapiensly-openai-agents.rag.max_num_results', 5),
             ]
         ]));
     }
@@ -1507,7 +1507,7 @@ class Agent
             throw new Exception("No valid vector store IDs found for the provided identifiers.");
         }
 
-        $max_num_results = $max_num_results ?? config('agent.rag.max_num_results', 5);
+        $max_num_results = $max_num_results ?? config('sapiensly-openai-agents.rag.max_num_results', 5);
         $this->ragConfig = array_merge((array)$this->ragConfig, [
             'type' => 'file_search',
             'vector_store_ids' => $vectorStoreIds,
@@ -1777,9 +1777,9 @@ class Agent
         $startTime = microtime(true);
 
         // Set max turns memory from options or default to 10
-        $maxTurns = $this->options->get('max_turns') ?? config('agent.default.max_turns', 10);
+        $maxTurns = $this->options->get('max_turns') ?? config('sapiensly-openai-agents.default_options.max_turns', 10);
         // Set max input tokens from options or default to 4096
-        $maxInputTokens = $this->options->get('max_input_tokens') ?? config('agent.default.max_turns', 4096);
+        $maxInputTokens = $this->options->get('max_input_tokens') ?? config('sapiensly-openai-agents.default_options.max_turns', 4096);
 
         // Get the limited message history (last N turns + system prompt)
         $limitedMessages = $this->getLimitedMessages($maxTurns, $maxInputTokens);
@@ -1808,7 +1808,7 @@ class Agent
 
         // Set conversation token limit
         $inputTokenCount = 0;
-        $conversationTokenLimit = $this->options->get('max_conversation_tokens') ?? config('agent.default.max_conversation_tokens', 10000);
+        $conversationTokenLimit = $this->options->get('max_conversation_tokens') ?? config('sapiensly-openai-agents.default_options.max_conversation_tokens', 10000);
         foreach ($inputItems as $item) {
             // Estimate token count for each item
             if (isset($item['content']) && $item['content'][0]['type'] === 'input_text') {
@@ -2551,8 +2551,8 @@ class Agent
     public function persistDefinition(): self
     {
         try {
-            $store = app()->bound(\Sapiensly\OpenaiAgents\Persistence\Contracts\AgentDefinitionStore::class)
-                ? app(\Sapiensly\OpenaiAgents\Persistence\Contracts\AgentDefinitionStore::class)
+            $store = app()->bound(AgentDefinitionStore::class)
+                ? app(AgentDefinitionStore::class)
                 : null;
         } catch (\Throwable $e) {
             $store = null;
@@ -2593,12 +2593,25 @@ class Agent
         // RAG config is tracked separately
         $rag = $this->ragConfig ?? null;
 
-        // MCP servers (minimal)
+        // MCP servers + exposures (+ optional schemas)
         $mcp = null;
         if ($this->mcpManager) {
             $arr = $this->mcpManager->toArray();
+            // Keep full server arrays (include client details)
+            $servers = array_values($arr['servers'] ?? []);
+
+            // Optional: snapshot schemas (useful for UI/hints). Execution still requires re-exposure.
+            $schemas = [];
+            try {
+                $schemas = $this->listMCPTools(null, true, true);
+            } catch (\Throwable $e) {
+                // Ignore schema snapshot issues
+            }
+
             $mcp = [
-                'servers' => array_values($arr['servers'] ?? []),
+                'servers' => $servers,
+                'exposures' => array_values($this->mcpExposureDefs),
+                'schemas' => $schemas, // optional; safe to keep
             ];
         }
 
@@ -2674,24 +2687,41 @@ class Agent
             }
         }
 
-        // MCP servers
+        // MCP: servers (full fidelity) and exposures
         $mcp = $def['tools']['mcp'] ?? null;
-        if (is_array($mcp) && !empty($mcp['servers'])) {
-            foreach ($mcp['servers'] as $srv) {
+        if (is_array($mcp)) {
+            // 1) Recreate servers using full server arrays
+            $servers = $mcp['servers'] ?? [];
+            foreach ($servers as $srv) {
                 try {
-                    if (!empty($srv['name']) && !empty($srv['url'])) {
-                        $config = [];
-                        if (!empty($srv['transport'])) {
-                            $config['transport'] = $srv['transport'];
-                        }
-                        $agent->useMCPServer([
-                            'name' => $srv['name'],
-                            'url' => $srv['url'],
-                            'config' => $config,
-                        ]);
-                    }
+                    $serverObj = \Sapiensly\OpenaiAgents\MCP\MCPServer::fromArray($srv);
+                    $agent->useMCPServer($serverObj);
                 } catch (\Throwable $e) {
                     // Ignore individual server restore issues
+                }
+            }
+
+            // 2) Re-apply exposures
+            $exposures = $mcp['exposures'] ?? [];
+            foreach ($exposures as $exp) {
+                $server = $exp['server'] ?? null;
+                if (!$server) { continue; }
+                $filters = $exp['filters'] ?? [];
+                $defaults = $exp['defaults'] ?? [];
+                try {
+                    // Explicit builder chain to ensure apply() regardless of filters presence
+                    $agent->exposeMCP($server)
+                        ->sources($filters['sources'] ?? ['tools','resources'])
+                        ->allow($filters['allow'] ?? [])
+                        ->deny($filters['deny'] ?? [])
+                        ->prefix($filters['prefix'] ?? '')
+                        ->mode($defaults['mode'] ?? 'auto')
+                        ->apply();
+
+                    // Also record the exposure in the agent (keeps in-memory registry coherent)
+                    $agent->recordMCPExposure($server, $filters, $defaults, $exp['exposed'] ?? []);
+                } catch (\Throwable $e) {
+                    Log::warning("Failed to re-apply MCP exposure for server {$server}: " . $e->getMessage());
                 }
             }
         }

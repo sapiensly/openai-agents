@@ -18,6 +18,9 @@ trait PersistentAgentTrait
     protected int $summarizeAfter = 20;
     protected bool $historyHydrated = false;
 
+    // Track exposures applied via exposeMCP() so they can be persisted and rehydrated
+    protected array $mcpExposureDefs = [];
+
     public function withConversation(?string $conversationId = null): self
     {
         // CRUCIAL: Reset state cuando se llama withConversation(),
@@ -232,6 +235,29 @@ trait PersistentAgentTrait
     public function isPersistenceEnabled(): bool
     {
         return $this->persistenceEnabled && $this->conversationId && $this->persistenceStore;
+    }
+
+    /**
+     * Record an MCP exposure so it can be persisted and re-applied on load.
+     */
+    public function recordMCPExposure(string $server, array $filters = [], array $defaults = [], array $exposed = []): self
+    {
+        // Strategy: one exposure entry per server (last write wins). If you prefer multiple, push instead of replace.
+        $this->mcpExposureDefs[$server] = [
+            'server' => $server,
+            'filters' => $filters,
+            'defaults' => $defaults,
+            'exposed' => array_values($exposed),
+        ];
+        return $this;
+    }
+
+    /**
+     * Introspection helper (optional).
+     */
+    public function getMCPExposureDefinitions(): array
+    {
+        return array_values($this->mcpExposureDefs);
     }
 
 }

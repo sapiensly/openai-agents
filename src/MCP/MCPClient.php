@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use GuzzleHttp\Client;
 use GuzzleHttp\RequestOptions;
+use RuntimeException;
 
 /**
  * Class MCPClient
@@ -23,6 +24,34 @@ class MCPClient
      * The server URL
      */
     private string $serverUrl;
+
+    /**
+     * Configurable endpoint paths
+     */
+    private array $paths = [
+        'health' => '/health',
+        'resources' => '/resources',
+        'call' => '/call',
+        'info' => '/info',
+        'stats' => '/stats',
+        'stream' => '/stream',
+        'events' => '/events',
+    ];
+
+    /**
+     * Full stream URL override (use as-is if set)
+     */
+    private ?string $fullStreamUrl = null;
+
+    /**
+     * Streaming HTTP method (GET or POST)
+     */
+    private string $streamMethod = 'POST';
+
+    /**
+     * Whether to send JSON body on streaming requests (POST) or use query params (GET)
+     */
+    private bool $streamSendJsonBody = true;
 
     /**
      * Request headers
@@ -50,11 +79,6 @@ class MCPClient
     private bool $enableLogging;
 
     /**
-     * The communication format (jsonrpc, rest, auto)
-     */
-    private string $format = 'auto';
-
-    /**
      * Guzzle HTTP client for streaming
      */
     private ?Client $streamingClient = null;
@@ -64,19 +88,19 @@ class MCPClient
      *
      * @param string $serverUrl The server URL
      * @param array $headers Request headers
-     * @param int $timeout Request timeout
-     * @param int $maxRetries Maximum retries
+     * @param int|null $timeout Request timeout
+     * @param int|null $maxRetries Maximum retries
      * @param bool $enableLogging Whether to enable logging
-     * @param string $format The communication format (jsonrpc, rest, auto)
      */
     public function __construct(
-        string $serverUrl,
-        array $headers = [],
-        int $timeout = 30,
-        int $maxRetries = 3,
-        bool $enableLogging = true,
-        string $format = 'auto'
+        string   $serverUrl,
+        array    $headers = [],
+        int|null $timeout = null,
+        int|null $maxRetries = null,
+        bool     $enableLogging = false
     ) {
+        $timeout ??= 30;
+        $maxRetries ??= 3;
         $this->serverUrl = rtrim($serverUrl, '/');
         $this->headers = array_merge([
             'Content-Type' => 'application/json',
@@ -85,670 +109,6 @@ class MCPClient
         $this->timeout = $timeout;
         $this->maxRetries = $maxRetries;
         $this->enableLogging = $enableLogging;
-        $this->format = $format;
-    }
-
-    /**
-     * List available tools via MCP protocol.
-     *
-     * @return array
-     */
-    public function listTools(): array
-    {
-        try {
-            // 1. Initialize connection
-            $initResponse = $this->sendMCPRequest('initialize', []);
-
-            if (!$initResponse || isset($initResponse['error'])) {
-                if ($this->enableLogging) {
-                    Log::error('MCP initialize failed', [
-                        'server' => $this->serverUrl,
-                        'response' => $initResponse
-                    ]);
-                }
-                return [];
-            }
-
-            // 2. List tools
-            $toolsResponse = $this->sendMCPRequest('tools/list', []);
-
-            if (!$toolsResponse || isset($toolsResponse['error'])) {
-                if ($this->enableLogging) {
-                    Log::error('MCP tools/list failed', [
-                        'server' => $this->serverUrl,
-                        'response' => $toolsResponse
-                    ]);
-                }
-                return [];
-            }
-
-            $tools = $toolsResponse['tools'] ?? [];
-
-            if ($this->enableLogging) {
-                Log::info('MCP tools discovered', [
-                    'server' => $this->serverUrl,
-                    'tools_count' => count($tools)
-                ]);
-            }
-
-            return $tools;
-        } catch (\Exception $e) {
-            if ($this->enableLogging) {
-                Log::error('MCP listTools failed', [
-                    'server' => $this->serverUrl,
-                    'error' => $e->getMessage()
-                ]);
-            }
-            return [];
-        }
-    }
-
-    /**
-     * Send MCP request (supports both HTTP and SSE).
-     *
-     * @param string $method
-     * @param array $params
-     * @return array|null
-     * @throws ConnectionException
-     */
-    private function sendMCPRequest(string $method, array $params = []): ?array
-    {
-        if ($this->enableLogging) {
-            Log::info('MCP request initiated', [
-                'server' => $this->serverUrl,
-                'method' => $method,
-                'format' => $this->format,
-                'supports_sse' => $this->supportsSSE()
-            ]);
-        }
-
-        // Check if this is an SSE endpoint
-        if ($this->supportsSSE()) {
-            if ($this->enableLogging) {
-                Log::info('Using SSE endpoint', [
-                    'server' => $this->serverUrl,
-                    'method' => $method
-                ]);
-            }
-            return $this->sendSSERequest($this->buildPayload($method, $params));
-        }
-    
-        // Handle different formats based on $this->format
-        switch ($this->format) {
-            case 'jsonrpc':
-                if ($this->enableLogging) {
-                    Log::info('Using JSON-RPC format only', [
-                        'server' => $this->serverUrl,
-                        'method' => $method
-                    ]);
-                }
-                return $this->sendJsonRpcRequest($method, $params);
-            
-            case 'rest':
-                if ($this->enableLogging) {
-                    Log::info('Using REST format only', [
-                        'server' => $this->serverUrl,
-                        'method' => $method
-                    ]);
-                }
-                return $this->sendRestRequest($method, $params);
-            
-            case 'auto':
-            default:
-                if ($this->enableLogging) {
-                    Log::info('Using auto format (JSON-RPC first, then REST)', [
-                        'server' => $this->serverUrl,
-                        'method' => $method
-                    ]);
-                }
-                
-                // Try JSON-RPC first, fallback to REST
-                $jsonRpcResult = $this->sendJsonRpcRequest($method, $params);
-                if ($jsonRpcResult !== null) {
-                    if ($this->enableLogging) {
-                        Log::info('JSON-RPC request successful', [
-                            'server' => $this->serverUrl,
-                            'method' => $method
-                        ]);
-                    }
-                    return $jsonRpcResult;
-                }
-                
-                if ($this->enableLogging) {
-                    Log::info('JSON-RPC failed, trying REST fallback', [
-                        'server' => $this->serverUrl,
-                        'method' => $method
-                    ]);
-                }
-                
-                // If JSON-RPC fails, try REST
-                $restResult = $this->sendRestRequest($method, $params);
-                
-                if ($this->enableLogging) {
-                    Log::info('REST fallback result', [
-                        'server' => $this->serverUrl,
-                        'method' => $method,
-                        'success' => $restResult !== null
-                    ]);
-                }
-                
-                return $restResult;
-        }
-    }
-
-    /**
-     * Send JSON-RPC 2.0 request
-     */
-    private function sendJsonRpcRequest(string $method, array $params = []): ?array
-    {
-        $payload = [
-            'jsonrpc' => '2.0',
-            'id' => uniqid(),
-            'method' => $method,
-            'params' => $params
-        ];
-
-        if ($this->enableLogging) {
-            Log::info('Sending JSON-RPC request', [
-                'server' => $this->serverUrl,
-                'method' => $method,
-                'payload_id' => $payload['id']
-            ]);
-        }
-
-        $response = Http::timeout($this->timeout)
-            ->withHeaders($this->headers)
-            ->post($this->serverUrl, $payload);
-
-        if ($this->enableLogging) {
-            Log::info('JSON-RPC response received', [
-                'server' => $this->serverUrl,
-                'method' => $method,
-                'status' => $response->status(),
-                'successful' => $response->successful(),
-                'content_type' => $response->header('Content-Type')
-            ]);
-        }
-
-        if ($response->successful()) {
-            $json = $response->json();
-            
-            // Validate JSON-RPC response format
-            if (isset($json['jsonrpc']) && isset($json['id'])) {
-                if ($this->enableLogging) {
-                    Log::info('Valid JSON-RPC response format', [
-                        'server' => $this->serverUrl,
-                        'method' => $method,
-                        'response_id' => $json['id'],
-                        'has_error' => isset($json['error'])
-                    ]);
-                }
-                return $json;
-            }
-            
-            if ($this->enableLogging) {
-                Log::warning('Response successful but not JSON-RPC format', [
-                    'server' => $this->serverUrl,
-                    'method' => $method,
-                    'response_keys' => array_keys($json)
-                ]);
-            }
-            
-            // If successful but not JSON-RPC format, return as-is
-            return $json;
-        }
-
-        if ($this->enableLogging) {
-            Log::error('JSON-RPC request failed', [
-                'server' => $this->serverUrl,
-                'method' => $method,
-                'status' => $response->status(),
-                'body' => $response->body()
-            ]);
-        }
-
-        return null;
-    }
-
-    /**
-     * Send REST request
-     */
-    private function sendRestRequest(string $method, array $params = []): ?array
-    {
-        $payload = [
-            'method' => $method,
-            'params' => $params
-        ];
-
-        if ($this->enableLogging) {
-            Log::info('Sending REST request', [
-                'server' => $this->serverUrl,
-                'method' => $method
-            ]);
-        }
-
-        $response = Http::timeout($this->timeout)
-            ->withHeaders($this->headers)
-            ->post($this->serverUrl, $payload);
-
-        if ($this->enableLogging) {
-            Log::info('REST response received', [
-                'server' => $this->serverUrl,
-                'method' => $method,
-                'status' => $response->status(),
-                'successful' => $response->successful(),
-                'content_type' => $response->header('Content-Type')
-            ]);
-        }
-
-        if ($response->successful()) {
-            if ($this->enableLogging) {
-                Log::info('REST request successful', [
-                    'server' => $this->serverUrl,
-                    'method' => $method
-                ]);
-            }
-            return $response->json();
-        }
-
-        if ($this->enableLogging) {
-            Log::error('REST request failed', [
-                'server' => $this->serverUrl,
-                'method' => $method,
-                'status' => $response->status(),
-                'body' => $response->body()
-            ]);
-        }
-
-        return null;
-    }
-
-    /**
-     * Build payload based on communication format
-     */
-    private function buildPayload(string $method, array $params = []): array
-    {
-        switch ($this->format) {
-            case 'jsonrpc':
-                return [
-                    'jsonrpc' => '2.0',
-                    'id' => uniqid(),
-                    'method' => $method,
-                    'params' => $params
-                ];
-            case 'rest':
-                return [
-                    'method' => $method,
-                    'params' => $params
-                ];
-            case 'auto':
-            default:
-                // For SSE, use JSON-RPC format as default
-                return [
-                    'jsonrpc' => '2.0',
-                    'id' => uniqid(),
-                    'method' => $method,
-                    'params' => $params
-                ];
-        }
-    }
-
-    /**
-     * Send request via Server-Sent Events.
-     */
-    private function sendSSERequest(array $payload): ?array
-    {
-        // ✅ NUEVO: Para SSE, usar formato simple (no JSON-RPC 2.0 completo)
-        $ssePayload = [
-            'method' => $payload['method'],
-        ];
-        
-        // Solo agregar params si existen y no están vacíos
-        if (!empty($payload['params'])) {
-            $ssePayload['params'] = $payload['params'];
-        }
-
-        if ($this->enableLogging) {
-            Log::info('Starting SSE request with multiple fallbacks', [
-                'server' => $this->serverUrl,
-                'method' => $payload['method'] ?? 'unknown',
-                'sse_payload' => $ssePayload
-            ]);
-        }
-
-        // ✅ ESTRATEGIA 1: SSE real (GET con query params) - Como MCP Inspector
-        $result = $this->trySSEConnection($ssePayload);
-        if ($result !== null) {
-            return $result;
-        }
-
-        // ✅ ESTRATEGIA 2: SSE POST con formato simple
-        $result = $this->trySSEPost($ssePayload, false);
-        if ($result !== null) {
-            return $result;
-        }
-
-        // ✅ ESTRATEGIA 3: SSE POST con JSON-RPC completo
-        $result = $this->trySSEPost($payload, true);
-        if ($result !== null) {
-            return $result;
-        }
-
-        // ✅ ESTRATEGIA 4: HTTP JSON-RPC fallback
-        $result = $this->tryHttpJsonRpc($payload);
-        if ($result !== null) {
-            return $result;
-        }
-
-        if ($this->enableLogging) {
-            Log::error('All SSE strategies failed', [
-                'server' => $this->serverUrl,
-                'method' => $payload['method'] ?? 'unknown'
-            ]);
-        }
-
-        return null;
-    }
-
-    /**
-     * ESTRATEGIA 1: SSE real con GET request (como MCP Inspector)
-     */
-    private function trySSEConnection(array $ssePayload): ?array
-    {
-        try {
-            if ($this->enableLogging) {
-                Log::info('Trying SSE GET connection', [
-                    'server' => $this->serverUrl,
-                    'method' => $ssePayload['method']
-                ]);
-            }
-
-            if (!$this->streamingClient) {
-                $this->streamingClient = new Client([
-                    'timeout' => $this->timeout,
-                    'headers' => [
-                        'Accept' => 'text/event-stream',
-                        'Cache-Control' => 'no-cache',
-                        'Connection' => 'keep-alive'
-                    ]
-                ]);
-            }
-
-            // Enviar como query parameters
-            $response = $this->streamingClient->get($this->serverUrl, [
-                'query' => [
-                    'message' => json_encode($ssePayload),
-                    'method' => $ssePayload['method']
-                ],
-                'stream' => true
-            ]);
-
-            if ($response->getStatusCode() !== 200) {
-                if ($this->enableLogging) {
-                    Log::warning('SSE GET failed', [
-                        'server' => $this->serverUrl,
-                        'status' => $response->getStatusCode()
-                    ]);
-                }
-                return null;
-            }
-
-            $result = $this->parseSSEStream($response->getBody(), $ssePayload['method']);
-            
-            if ($this->enableLogging) {
-                Log::info('SSE GET result', [
-                    'server' => $this->serverUrl,
-                    'method' => $ssePayload['method'],
-                    'success' => $result !== null
-                ]);
-            }
-
-            return $result;
-
-        } catch (\Exception $e) {
-            if ($this->enableLogging) {
-                Log::warning('SSE GET connection failed', [
-                    'server' => $this->serverUrl,
-                    'error' => $e->getMessage()
-                ]);
-            }
-            return null;
-        }
-    }
-
-    /**
-     * ESTRATEGIA 2 & 3: SSE POST requests
-     */
-    private function trySSEPost(array $payload, bool $useFullJsonRpc = false): ?array
-    {
-        try {
-            $strategy = $useFullJsonRpc ? 'SSE POST with full JSON-RPC' : 'SSE POST with simple format';
-            
-            if ($this->enableLogging) {
-                Log::info("Trying {$strategy}", [
-                    'server' => $this->serverUrl,
-                    'method' => $payload['method']
-                ]);
-            }
-
-            $headers = [
-                'Accept' => 'text/event-stream',
-                'Content-Type' => 'application/json',
-                'Cache-Control' => 'no-cache'
-            ];
-
-            $response = Http::timeout($this->timeout)
-                ->withHeaders($headers)
-                ->post($this->serverUrl, $payload);
-
-            if (!$response->successful()) {
-                if ($this->enableLogging) {
-                    Log::warning("{$strategy} failed", [
-                        'server' => $this->serverUrl,
-                        'status' => $response->status(),
-                        'body' => substr($response->body(), 0, 200)
-                    ]);
-                }
-                return null;
-            }
-
-            // Check content type
-            $contentType = $response->header('Content-Type') ?: '';
-            
-            if (str_contains($contentType, 'application/json')) {
-                // Direct JSON response
-                $result = $response->json();
-                
-                if ($this->enableLogging) {
-                    Log::info("{$strategy} success (JSON)", [
-                        'server' => $this->serverUrl,
-                        'method' => $payload['method']
-                    ]);
-                }
-                
-                return $result;
-            }
-
-            if (str_contains($contentType, 'text/event-stream') || str_contains($contentType, 'text/plain')) {
-                // SSE format response
-                $result = $this->parseSSEResponse($response->body(), $payload['method']);
-                
-                if ($this->enableLogging) {
-                    Log::info("{$strategy} success (SSE)", [
-                        'server' => $this->serverUrl,
-                        'method' => $payload['method']
-                    ]);
-                }
-                
-                return $result;
-            }
-
-            if ($this->enableLogging) {
-                Log::warning("{$strategy} unexpected content type", [
-                    'server' => $this->serverUrl,
-                    'content_type' => $contentType
-                ]);
-            }
-
-            return null;
-
-        } catch (\Exception $e) {
-            if ($this->enableLogging) {
-                Log::warning("{$strategy} failed", [
-                    'server' => $this->serverUrl,
-                    'error' => $e->getMessage()
-                ]);
-            }
-            return null;
-        }
-    }
-
-    /**
-     * ESTRATEGIA 4: HTTP JSON-RPC fallback
-     */
-    private function tryHttpJsonRpc(array $payload): ?array
-    {
-        try {
-            if ($this->enableLogging) {
-                Log::info('Trying HTTP JSON-RPC fallback', [
-                    'server' => $this->serverUrl,
-                    'method' => $payload['method']
-                ]);
-            }
-
-            $headers = [
-                'Content-Type' => 'application/json',
-                'Accept' => 'application/json'
-            ];
-
-            $response = Http::timeout($this->timeout)
-                ->withHeaders($headers)
-                ->post($this->serverUrl, $payload);
-
-            if ($response->successful()) {
-                $result = $response->json();
-                
-                if ($this->enableLogging) {
-                    Log::info('HTTP JSON-RPC fallback success', [
-                        'server' => $this->serverUrl,
-                        'method' => $payload['method']
-                    ]);
-                }
-                
-                return $result;
-            }
-
-            if ($this->enableLogging) {
-                Log::warning('HTTP JSON-RPC fallback failed', [
-                    'server' => $this->serverUrl,
-                    'status' => $response->status()
-                ]);
-            }
-
-            return null;
-
-        } catch (\Exception $e) {
-            if ($this->enableLogging) {
-                Log::warning('HTTP JSON-RPC fallback failed', [
-                    'server' => $this->serverUrl,
-                    'error' => $e->getMessage()
-                ]);
-            }
-            return null;
-        }
-    }
-
-    /**
-     * Parse SSE stream (for real SSE connections)
-     */
-    private function parseSSEStream($body, string $method): ?array
-    {
-        $result = null;
-        $timeout = time() + $this->timeout;
-
-        while (!$body->eof() && time() < $timeout) {
-            $line = trim($body->read(1024));
-            
-            if (empty($line)) {
-                usleep(10000); // 10ms
-                continue;
-            }
-
-            // Parse SSE format
-            if (str_starts_with($line, 'data: ')) {
-                $data = substr($line, 6);
-                
-                if ($data === '[DONE]') {
-                    break;
-                }
-                
-                $decoded = json_decode($data, true);
-                if ($decoded !== null) {
-                    $result = $decoded;
-                    break;
-                }
-            }
-        }
-
-        return $result;
-    }
-
-    /**
-     * Parse SSE response (for HTTP responses in SSE format)
-     */
-    private function parseSSEResponse(string $body, string $method): ?array
-    {
-        $lines = explode("\n", $body);
-        
-        foreach ($lines as $line) {
-            $line = trim($line);
-            
-            if (str_starts_with($line, 'data: ')) {
-                $data = substr($line, 6);
-                
-                if ($data && $data !== '[DONE]') {
-                    $decoded = json_decode($data, true);
-                    if ($decoded !== null) {
-                        return $decoded;
-                    }
-                }
-            }
-        }
-
-        // If no SSE format found, try to parse entire body as JSON
-        $decoded = json_decode($body, true);
-        return $decoded;
-    }
-
-    /**
-     * Check if server supports SSE.
-     *
-     * @return bool
-     */
-    public function supportsSSE(): bool
-    {
-        $hasSseUrl = str_contains($this->serverUrl, '/sse');
-        $hasSseHeaders = isset($this->headers['Accept']) && 
-                        str_contains($this->headers['Accept'], 'text/event-stream');
-        $forceJsonRpc = isset($this->headers['X-Force-JSON-RPC']) && 
-                       $this->headers['X-Force-JSON-RPC'] === 'true';
-        
-        if ($this->enableLogging) {
-            Log::debug('SSE support check', [
-                'server' => $this->serverUrl,
-                'has_sse_url' => $hasSseUrl,
-                'has_sse_headers' => $hasSseHeaders,
-                'force_jsonrpc' => $forceJsonRpc,
-                'result' => !$forceJsonRpc && ($hasSseUrl || $hasSseHeaders)
-            ]);
-        }
-        
-        // Si se fuerza JSON-RPC, no usar SSE
-        if ($forceJsonRpc) {
-            return false;
-        }
-        
-        return $hasSseUrl || $hasSseHeaders;
     }
 
     /**
@@ -759,6 +119,46 @@ class MCPClient
     public function getServerUrl(): string
     {
         return $this->serverUrl;
+    }
+
+    /**
+     * Set configurable endpoint paths.
+     */
+    public function setPaths(array $paths): self
+    {
+        // Merge while preserving keys
+        $this->paths = array_merge($this->paths, $paths);
+        return $this;
+    }
+
+    /**
+     * Set full stream URL (override base + path)
+     */
+    public function setFullStreamUrl(?string $url): self
+    {
+        $this->fullStreamUrl = $url ? rtrim($url, '/') : null;
+        return $this;
+    }
+
+    /**
+     * Set streaming method (GET|POST)
+     */
+    public function setStreamMethod(string $method): self
+    {
+        $method = strtoupper($method);
+        if (in_array($method, ['GET','POST'])) {
+            $this->streamMethod = $method;
+        }
+        return $this;
+    }
+
+    /**
+     * Set whether to send JSON body for stream requests
+     */
+    public function setStreamSendJsonBody(bool $flag): self
+    {
+        $this->streamSendJsonBody = $flag;
+        return $this;
     }
 
     /**
@@ -826,16 +226,19 @@ class MCPClient
     public function testConnection(): bool
     {
         try {
-            $initResponse = $this->sendMCPRequest('initialize', []);
-        
+            $response = Http::timeout($this->timeout)
+                ->withHeaders($this->headers)
+                ->get($this->serverUrl . ($this->paths['health'] ?? '/health'));
+
             if ($this->enableLogging) {
                 Log::info('MCP connection test', [
                     'server' => $this->serverUrl,
-                    'success' => $initResponse !== null && !isset($initResponse['error'])
+                    'status' => $response->status(),
+                    'success' => $response->successful()
                 ]);
             }
-    
-            return $initResponse !== null && !isset($initResponse['error']);
+
+            return $response->successful();
         } catch (Exception $e) {
             if ($this->enableLogging) {
                 Log::error('MCP connection test failed', [
@@ -855,18 +258,20 @@ class MCPClient
     public function discoverResources(): array
     {
         try {
-            $resourcesResponse = $this->sendMCPRequest('resources/list', []);
-        
+            $response = Http::timeout($this->timeout)
+                ->withHeaders($this->headers)
+                ->get($this->serverUrl . ($this->paths['resources'] ?? '/resources'));
+
             if ($this->enableLogging) {
                 Log::info('MCP resource discovery', [
                     'server' => $this->serverUrl,
-                    'success' => $resourcesResponse !== null && !isset($resourcesResponse['error']),
-                    'resources_count' => count($resourcesResponse['resources'] ?? [])
+                    'status' => $response->status(),
+                    'resources_count' => count($response->json() ?? [])
                 ]);
             }
-    
-            if ($resourcesResponse && !isset($resourcesResponse['error'])) {
-                return $resourcesResponse['resources'] ?? [];
+
+            if ($response->successful()) {
+                return $response->json() ?? [];
             }
 
             return [];
@@ -895,25 +300,36 @@ class MCPClient
 
         while ($retries <= $this->maxRetries) {
             try {
-                $response = $this->sendMCPRequest('resources/call', [
-                    'name' => $resourceName,
-                    'arguments' => $parameters
-                ]);
-    
+                $response = Http::timeout($this->timeout)
+                    ->withHeaders($this->headers)
+                    ->post($this->serverUrl . ($this->paths['call'] ?? '/call'), [
+                        'resource' => $resourceName,
+                        'parameters' => $parameters
+                    ]);
+
                 if ($this->enableLogging) {
                     Log::info('MCP resource call', [
                         'server' => $this->serverUrl,
                         'resource' => $resourceName,
                         'parameters' => $parameters,
-                        'success' => $response !== null && !isset($response['error'])
+                        'status' => $response->status(),
+                        'success' => $response->successful()
                     ]);
                 }
-    
-                if ($response && !isset($response['error'])) {
-                    return $response['result'] ?? $response;
+
+                if ($response->successful()) {
+                    return $response->json() ?? [];
                 }
-    
-                $lastError = $response['error'] ?? 'Unknown error';
+
+                // If it's a client error (4xx), don't retry
+                if ($response->status() >= 400 && $response->status() < 500) {
+                    return [
+                        'error' => 'Client error: ' . $response->body(),
+                        'status' => $response->status()
+                    ];
+                }
+
+                $lastError = 'Server error: ' . $response->body();
                 $retries++;
 
                 if ($retries <= $this->maxRetries) {
@@ -940,7 +356,7 @@ class MCPClient
         }
 
         return [
-            'error' => $lastError,
+            'error' => 'Max retries exceeded: ' . $lastError,
             'status' => 'error'
         ];
     }
@@ -955,7 +371,7 @@ class MCPClient
         try {
             $response = Http::timeout($this->timeout)
                 ->withHeaders($this->headers)
-                ->get($this->serverUrl . '/info');
+                ->get($this->serverUrl . ($this->paths['info'] ?? '/info'));
 
             if ($this->enableLogging) {
                 Log::info('MCP server info', [
@@ -1025,7 +441,7 @@ class MCPClient
         try {
             $response = Http::timeout($this->timeout)
                 ->withHeaders($this->headers)
-                ->get($this->serverUrl . '/stats');
+                ->get($this->serverUrl . ($this->paths['stats'] ?? '/stats'));
 
             if ($this->enableLogging) {
                 Log::info('MCP server stats', [
@@ -1043,6 +459,60 @@ class MCPClient
         } catch (Exception $e) {
             if ($this->enableLogging) {
                 Log::error('MCP server stats failed', [
+                    'server' => $this->serverUrl,
+                    'error' => $e->getMessage()
+                ]);
+            }
+            return [];
+        }
+    }
+
+    /**
+     * List MCP tools via JSON-RPC (tools/list).
+     *
+     * @return array
+     */
+    public function listTools(): array
+    {
+        try {
+            $payload = [
+                'jsonrpc' => '2.0',
+                'id' => 'tools-list-' . uniqid(),
+                'method' => 'tools/list',
+                'params' => []
+            ];
+
+            $resp = Http::timeout($this->timeout)
+                ->withHeaders($this->headers)
+                ->post($this->serverUrl, $payload);
+
+            if (!$resp->successful()) {
+                if ($this->enableLogging) {
+                    Log::warning('MCP listTools non-success response', [
+                        'server' => $this->serverUrl,
+                        'status' => $resp->status(),
+                        'body' => $resp->body(),
+                    ]);
+                }
+                return [];
+            }
+
+            $json = $resp->json() ?? [];
+            if (isset($json['error'])) {
+                if ($this->enableLogging) {
+                    Log::warning('MCP listTools JSON-RPC error', [
+                        'server' => $this->serverUrl,
+                        'error' => $json['error'],
+                    ]);
+                }
+                return [];
+            }
+
+            $result = $json['result'] ?? [];
+            return $result['tools'] ?? [];
+        } catch (Exception $e) {
+            if ($this->enableLogging) {
+                Log::warning('MCP listTools failed', [
                     'server' => $this->serverUrl,
                     'error' => $e->getMessage()
                 ]);
@@ -1101,6 +571,11 @@ class MCPClient
             'timeout' => $this->timeout,
             'max_retries' => $this->maxRetries,
             'enable_logging' => $this->enableLogging,
+            // Added for full-fidelity persistence
+            'paths' => $this->paths,
+            'full_stream_url' => $this->fullStreamUrl,
+            'stream_method' => $this->streamMethod,
+            'stream_send_json_body' => $this->streamSendJsonBody,
         ];
     }
 
@@ -1110,7 +585,6 @@ class MCPClient
      * @param string $resourceName The resource name
      * @param array $parameters The resource parameters
      * @return iterable
-     * @throws Exception
      */
     public function streamResource(string $resourceName, array $parameters = []): iterable
     {
@@ -1125,13 +599,26 @@ class MCPClient
         }
 
         try {
-            $response = $this->streamingClient->post($this->serverUrl . '/stream', [
-                RequestOptions::JSON => [
-                    'resource' => $resourceName,
-                    'parameters' => $parameters
-                ],
-                RequestOptions::STREAM => true,
-            ]);
+            $url = $this->fullStreamUrl ?? ($this->serverUrl . ($this->paths['stream'] ?? '/stream'));
+            if (strtoupper($this->streamMethod) === 'GET') {
+                $response = $this->streamingClient->get($url, [
+                    RequestOptions::QUERY => array_merge([
+                        'resource' => $resourceName,
+                    ], $parameters),
+                    RequestOptions::STREAM => true,
+                ]);
+            } else {
+                $response = $this->streamingClient->post($url, [
+                    RequestOptions::JSON => $this->streamSendJsonBody ? [
+                        'resource' => $resourceName,
+                        'parameters' => $parameters
+                    ] : null,
+                    RequestOptions::QUERY => $this->streamSendJsonBody ? null : array_merge([
+                        'resource' => $resourceName,
+                    ], $parameters),
+                    RequestOptions::STREAM => true,
+                ]);
+            }
 
             $body = $response->getBody();
 
@@ -1185,7 +672,7 @@ class MCPClient
      * @param string $eventType The event type to subscribe to
      * @param array $filters Optional filters for the events
      * @return iterable
-     * @throws Exception|GuzzleException
+     * @throws GuzzleException
      */
     public function subscribeToEvents(string $eventType, array $filters = []): iterable
     {
@@ -1200,7 +687,7 @@ class MCPClient
         }
 
         try {
-            $response = $this->streamingClient->get($this->serverUrl . '/events', [
+            $response = $this->streamingClient->get($this->serverUrl . ($this->paths['events'] ?? '/events'), [
                 RequestOptions::QUERY => array_merge([
                     'event_type' => $eventType
                 ], $filters),
@@ -1254,58 +741,29 @@ class MCPClient
     }
 
     /**
-     * Stream resource with callback.
+     * Stream resource with callback for real-time processing.
      *
      * @param string $resourceName The resource name
-     * @param array $parameters The resource parameters
-     * @param callable|null $callback The callback function
+     * @param array|null $parameters The resource parameters
+     * @param callable|null $callback Callback function for each chunk
      * @return void
-     * @throws GuzzleException
      * @throws Exception
      */
-    public function streamResourceWithCallback(string $resourceName, array $parameters = [], ?callable $callback = null): void
+    public function streamResourceWithCallback(string $resourceName, array|null $parameters = null, callable|null $callback = null): void
     {
-        try {
-            $streamingClient = $this->getStreamingClient();
-
-            $response = $streamingClient->get($this->serverUrl . '/stream/' . $resourceName, [
-                'headers' => $this->headers,
-                'query' => $parameters,
-                'stream' => true,
-                'timeout' => $this->timeout
-            ]);
-
-            $body = $response->getBody();
-
-            while (!$body->eof()) {
-                $chunk = $body->read(1024);
-                if ($chunk && $callback !== null) {
-                    $callback($chunk);
-                }
+        $parameters ??= [];
+        foreach ($this->streamResource($resourceName, $parameters) as $chunk) {
+            if ($callback) {
+                $callback($chunk);
             }
-
-            if ($this->enableLogging) {
-                Log::info('MCP resource streaming completed', [
-                    'server' => $this->serverUrl,
-                    'resource' => $resourceName,
-                    'parameters' => $parameters
-                ]);
-            }
-
-        } catch (Exception $e) {
-            if ($this->enableLogging) {
-                Log::error('MCP resource streaming failed', [
-                    'server' => $this->serverUrl,
-                    'resource' => $resourceName,
-                    'error' => $e->getMessage()
-                ]);
-            }
-            throw $e;
         }
     }
 
-    /*
-
+    /**
+     * Check if the server supports SSE streaming.
+     *
+     * @return bool
+     */
     public function supportsSSE(): bool
     {
         try {
@@ -1317,7 +775,6 @@ class MCPClient
             return false;
         }
     }
-    */
 
     /**
      * Get streaming client instance.
@@ -1339,5 +796,191 @@ class MCPClient
     {
         $this->streamingClient = $client;
         return $this;
+    }
+
+
+    /**
+     * Performs a debugging operation by probing various endpoints and returns the report.
+     *
+     * @param array $options Optional settings for customizing the debug process:
+     *                       - include_headers (bool): Whether to include request/response headers in the report. Default is true.
+     *                       - max_body (int): Maximum length for response bodies before truncation. Default is 2000 characters.
+     *                       - probe (array): List of probes to execute (e.g., 'health', 'info', 'resources', 'stats'). Default contains all.
+     *                       - probe_stream (bool): Whether to execute stream-based probing. Default is false.
+     *                       - stream_max_events (int): Maximum number of events to capture during stream-based probing. Default is 3.
+     * @return array The generated debug report containing details of each probe, including requests, responses, durations, and errors.
+     * @throws RuntimeException|ConnectionException If an unsupported HTTP method is encountered during probing.
+     */
+
+    public function debug(array $options = []): array
+    {
+        $includeHeaders = (bool)($options['include_headers'] ?? true);
+        $maxBody = (int)($options['max_body'] ?? 2000);
+        $probe = $options['probe'] ?? ['tools','resources','capabilities'];
+        $probeStream = (bool)($options['probe_stream'] ?? false);
+        $streamMaxEvents = (int)($options['stream_max_events'] ?? 3);
+
+        $report = [
+            'server_url' => $this->serverUrl,
+            'stream' => [
+                'full_stream_url' => $this->fullStreamUrl,
+                'method' => $this->streamMethod,
+                'send_json_body' => $this->streamSendJsonBody,
+            ],
+            'probes' => [],
+        ];
+
+        $http = fn() => \Illuminate\Support\Facades\Http::timeout($this->timeout)->withHeaders($this->headers);
+
+        // JSON-RPC debug method
+        $doJSONRPC = function (string $label, string $method, array $params = []) use (&$report, $http, $includeHeaders, $maxBody) {
+            $start = microtime(true);
+            try {
+                $payload = [
+                    'jsonrpc' => '2.0',
+                    'id' => uniqid(),
+                    'method' => $method,
+                    'params' => $params
+                ];
+
+                $reqInfo = [
+                    'method' => 'POST',
+                    'url' => $this->serverUrl,
+                    'jsonrpc_method' => $method,
+                    'jsonrpc_params' => $params,
+                ];
+                if ($includeHeaders) { $reqInfo['headers'] = $this->headers; }
+
+                $response = $http()->post($this->serverUrl, $payload);
+                $durationMs = (int) ((microtime(true) - $start) * 1000);
+
+                $body = $response->body();
+                $jsonResponse = $response->json();
+
+                $report['probes'][$label] = [
+                    'request' => $reqInfo,
+                    'response' => [
+                        'status' => $response->status(),
+                        'ok' => $response->successful(),
+                        'headers' => $includeHeaders ? $response->headers() : null,
+                        'jsonrpc_response' => $jsonResponse,
+                        'has_result' => isset($jsonResponse['result']),
+                        'has_error' => isset($jsonResponse['error']),
+                        'body' => strlen($body) > $maxBody ? substr($body, 0, $maxBody) . '...<truncated>' : $body,
+                    ],
+                    'duration_ms' => $durationMs,
+                ];
+            } catch (\Throwable $e) {
+                $durationMs = (int) ((microtime(true) - $start) * 1000);
+                $report['probes'][$label] = [
+                    'request' => [ 'method' => 'POST', 'url' => $this->serverUrl, 'jsonrpc_method' => $method ],
+                    'error' => $e->getMessage(),
+                    'duration_ms' => $durationMs,
+                ];
+            }
+        };
+
+        // Tools list (MCP standard)
+        if (in_array('tools', $probe, true)) {
+            $doJSONRPC('tools_list', 'tools/list', []);
+        }
+
+        // Resources list (MCP standard)
+        if (in_array('resources', $probe, true)) {
+            $doJSONRPC('resources_list', 'resources/list', []);
+        }
+
+        // Capabilities (MCP standard)
+        if (in_array('capabilities', $probe, true)) {
+            $doJSONRPC('initialize', 'initialize', [
+                'protocolVersion' => '2024-11-05',
+                'capabilities' => [],
+                'clientInfo' => ['name' => 'MCP-Debug-Client', 'version' => '1.0.0']
+            ]);
+        }
+
+        // Streaming probe (SSE)
+        if ($probeStream && $this->fullStreamUrl) {
+            $streamInfo = [
+                'request' => [
+                    'method' => $this->streamMethod,
+                    'url' => $this->fullStreamUrl,
+                    'headers' => $includeHeaders ? array_merge($this->headers, [
+                        'Accept' => 'text/event-stream',
+                        'Cache-Control' => 'no-cache'
+                    ]) : null,
+                ],
+            ];
+
+            $start = microtime(true);
+            try {
+                // Debug streaming con timeout seguro
+                $events = $this->debugStreamingSafe($this->fullStreamUrl, 5, $streamMaxEvents);
+                $streamInfo['response'] = [
+                    'ok' => true,
+                    'events_captured' => count($events),
+                    'events' => $events,
+                ];
+            } catch (\Throwable $e) {
+                $streamInfo['error'] = $e->getMessage();
+            } finally {
+                $streamInfo['duration_ms'] = (int) ((microtime(true) - $start) * 1000);
+            }
+
+            $report['probes']['sse_stream'] = $streamInfo;
+        }
+
+        return $report;
+    }
+
+    /**
+     * Debug streaming de forma segura con timeout
+     */
+    private function debugStreamingSafe(string $url, int $timeoutSec, int $maxEvents): array
+    {
+        $events = [];
+        $startTime = time();
+
+        try {
+            $context = stream_context_create([
+                'http' => [
+                    'method' => 'GET',
+                    'header' => implode("\r\n", [
+                        'Accept: text/event-stream',
+                        'Cache-Control: no-cache',
+                        'User-Agent: MCP-Debug-Client/1.0'
+                    ]),
+                    'timeout' => $timeoutSec
+                ]
+            ]);
+
+            $stream = fopen($url, 'r', false, $context);
+            if (!$stream) {
+                throw new \Exception('Failed to open SSE stream');
+            }
+
+            stream_set_timeout($stream, 1); // 1 segundo por línea
+
+            while (!feof($stream) && count($events) < $maxEvents) {
+                if ((time() - $startTime) >= $timeoutSec) {
+                    $events[] = '[TIMEOUT] Reached ' . $timeoutSec . 's timeout';
+                    break;
+                }
+
+                $line = fgets($stream);
+                if ($line !== false) {
+                    $trimmed = trim($line);
+                    if (!empty($trimmed) && $trimmed !== ':') {
+                        $events[] = $trimmed;
+                    }
+                }
+            }
+
+            fclose($stream);
+        } catch (\Throwable $e) {
+            $events[] = '[ERROR] ' . $e->getMessage();
+        }
+
+        return $events;
     }
 }
